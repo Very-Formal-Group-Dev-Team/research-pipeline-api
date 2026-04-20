@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN status_text VARCHAR(255) DEFAULT NULL AFTER status;

@@ -1,0 +1,53 @@
+{
+  "name": "student-research-api",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node scripts/run-migrations.js && node src/server.js",
+    "dev": "nodemon src/server.js",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
+    "docker:down:clean": "docker compose down -v --remove-orphans",
+    "docker:restart": "docker compose restart app",
+    "docker:logs": "docker compose logs -f app",
+    "docker:build": "docker compose build --no-cache",
+    "migrate": "node scripts/run-migrations.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/urritomas/student-research-api.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bugs": {
+    "url": "https://github.com/urritomas/student-research-api/issues"
+  },
+  "homepage": "https://github.com/urritomas/student-research-api#readme",
+  "dependencies": {
+    "@react-oauth/google": "^0.12.2",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "diff": "^8.0.3",
+    "docx": "^9.6.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "mammoth": "^1.11.0",
+    "multer": "^2.1.0",
+    "mysql2": "^3.11.0",
+    "nodemailer": "^8.0.1",
+    "sequelize": "^6.37.7",
+    "sharp": "^0.32.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}

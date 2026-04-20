@@ -1,0 +1,13 @@
+ALTER TABLE users ADD COLUMN email_verified TINYINT(1) NOT NULL DEFAULT 0 AFTER status;
+
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+  id CHAR(36) NOT NULL DEFAULT (UUID()),
+  user_id CHAR(36) NOT NULL,
+  token VARCHAR(128) NOT NULL,
+  expires_at TIMESTAMP NOT NULL,
+  used_at TIMESTAMP NULL DEFAULT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY evt_token_unique (token),
+  CONSTRAINT evt_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
