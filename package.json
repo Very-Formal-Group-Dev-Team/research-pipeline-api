@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node scripts/run-migrations.js && node src/server.js",
     "dev": "nodemon src/server.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down",
     "docker:down:clean": "docker compose down -v --remove-orphans",
@@ -48,6 +50,9 @@
     "sharp": "^0.32.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "eslint-plugin-node": "^11.1.0",
     "nodemon": "^3.1.11"
   }
 }

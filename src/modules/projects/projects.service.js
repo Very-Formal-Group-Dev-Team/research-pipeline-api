@@ -52,16 +52,26 @@ async function createProject({ title, abstract, keywords, researchType, program,
 async function getProjectsByUser(userId) {
   const { rows } = await db.query(
     `SELECT p.*,
-            ANY_VALUE(pm_self.role) AS member_role
+            (
+              SELECT pm.role
+              FROM project_members pm
+              WHERE pm.project_id = p.id
+                AND pm.user_id = ?
+                AND pm.status = 'accepted'
+              ORDER BY pm.id DESC
+              LIMIT 1
+            ) AS member_role
      FROM projects p
-     LEFT JOIN project_members pm_self
-       ON pm_self.project_id = p.id
-       AND pm_self.user_id = ?
-       AND pm_self.status = 'accepted'
-     WHERE p.created_by = ? OR pm_self.id IS NOT NULL
-     GROUP BY p.id
+     WHERE p.created_by = ?
+        OR EXISTS (
+          SELECT 1
+          FROM project_members pm_self
+          WHERE pm_self.project_id = p.id
+            AND pm_self.user_id = ?
+            AND pm_self.status = 'accepted'
+        )
      ORDER BY p.created_at DESC`,
-    [userId, userId]
+    [userId, userId, userId]
   );
   return rows;
 }
