@@ -789,6 +789,26 @@ async function setDefenseVenue(defenseId, coordinatorId, venue) {
   return { data: { success: true } };
 }
 
+async function deleteDefense(defenseId, institutionId) {
+  // Verify the defense belongs to a project in this institution
+  const { rows } = await db.query(
+    `SELECT d.id, d.status
+     FROM defenses d
+     JOIN projects p ON p.id = d.project_id
+     WHERE d.id = ? AND p.institution_id = ?
+     LIMIT 1`,
+    [defenseId, institutionId]
+  );
+
+  if (!rows[0]) {
+    return { error: 'Defense not found', status: 404 };
+  }
+
+  await db.query('DELETE FROM defenses WHERE id = ?', [defenseId]);
+
+  return { data: { success: true } };
+}
+
 // ─── Dashboard Stats ────────────────────────────────────────────────────────
 
 async function getCoordinatorStats(institutionId) {
@@ -1199,6 +1219,7 @@ module.exports = {
   verifyDefense,
   rejectDefense,
   setDefenseVenue,
+  deleteDefense,
   getCoordinatorStats,
   createDefenseForCourse,
   createCoordinatorDefenseBooking,

@@ -157,6 +157,17 @@ async function setVenue(req, res) {
   return res.json(result.data);
 }
 
+async function deleteDefense(req, res) {
+  const result = await coordinatorService.deleteDefense(
+    req.params.defenseId,
+    req.institution.id
+  );
+  if (result.error) {
+    return res.status(result.status || 404).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
 async function createDefenseForCourse(req, res) {
   const { courseId } = req.params;
   const { defenseType, scheduledAt, date, startTime, endTime, location, venue, forceSchedule, holdDefense } = req.body;
@@ -220,6 +231,7 @@ module.exports = {
   verifyDefense,
   rejectDefense,
   setVenue,
+  deleteDefense,
   createDefenseForCourse,
   bookDefenseSchedule,
   getInstitutionProjects,
