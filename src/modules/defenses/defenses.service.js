@@ -593,7 +593,7 @@ async function createDefense(userId, payload) {
       endAt: normalizedEnd.dbValue,
       location,
       fallbackTeacherId: userId,
-      statuses: ['scheduled', 'approved', 'moved', 'pending'],
+      statuses: null, // Check all statuses for conflicts
       scheduleSources,
       queryRunner: conn,
     });
@@ -876,7 +876,7 @@ async function rescheduleDefense(userId, defenseId, payload) {
       endAt: normalizedEnd.dbValue,
       location: defense.location,
       fallbackTeacherId: userId,
-      statuses: ['scheduled', 'approved', 'moved'],
+      statuses: null, // Check all statuses for conflicts
       scheduleSources: [ADVISER_BOOKING_TABLE, 'defenses'],
       queryRunner: conn,
     });
@@ -991,7 +991,7 @@ async function processAllPendingDefenses() {
         endAt: normalizedEnd.dbValue,
         location: pending.location,
         fallbackTeacherId: pending.created_by,
-        statuses: ['scheduled', 'approved', 'moved'],
+        statuses: null, // Check all statuses to see if pending can be auto-scheduled
         scheduleSources: [ADVISER_BOOKING_TABLE, 'defenses'],
         queryRunner: conn,
       });
@@ -1056,4 +1056,4 @@ async function processAllPendingDefenses() {
   }
 }
 
-module.exports = { createDefense, getDefensesByUser, getDefensesForMember, cancelDefense, rescheduleDefense };
+module.exports = { createDefense, getDefensesByUser, getDefensesForMember, cancelDefense, rescheduleDefense, validateScheduleConstraints, getScheduleWindow };

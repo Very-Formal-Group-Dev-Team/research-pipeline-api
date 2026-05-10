@@ -113,11 +113,11 @@ async function listAllDefenses(req, res) {
 }
 
 async function verifyDefense(req, res) {
-  const { venue, verifiedSchedule, verifiedEndTime, notes, forceApprove } = req.body;
+  const { venue, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense } = req.body;
   const result = await coordinatorService.verifyDefense(
     req.params.defenseId,
     req.user.id,
-    { venue, verifiedSchedule, verifiedEndTime, notes, forceApprove }
+    { venue, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense }
   );
 
   if (result.error) {
@@ -168,7 +168,7 @@ async function createDefenseForCourse(req, res) {
   );
 
   if (result.error) {
-    return res.status(400).json({ error: result.error });
+    return res.status(result.status || 400).json({ error: result.error });
   }
   return res.status(201).json(result.data);
 }
