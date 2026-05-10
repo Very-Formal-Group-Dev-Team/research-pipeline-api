@@ -823,7 +823,7 @@ async function getCoordinatorStats(institutionId) {
 }
 
 async function createDefenseForCourse(institutionId, coordinatorId, payload) {
-  const { courseId, defenseType, scheduledAt, date, startTime, endTime, location, venue } = payload;
+  const { courseId, defenseType, scheduledAt, date, startTime, endTime, location, venue, forceSchedule, holdDefense } = payload;
 
   if (!courseId) return { error: 'courseId is required' };
   if (!defenseType || !['proposal', 'midterm', 'final'].includes(defenseType)) {
@@ -869,53 +869,76 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
     await conn.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
     await conn.beginTransaction();
 
-    // ── Single overlap check for the whole batch ─────────────────────────
-    // All projects get the same time slot, so one check is enough.
-    // We query the defenses table directly using string comparison to avoid
-    // any timezone conversion issues with mysql2.
-    const [overlapRows] = await conn.execute(
-      `SELECT id, project_id,
-              DATE_FORMAT(scheduled_at, '%Y-%m-%d %H:%i') AS slot_start,
-              DATE_FORMAT(COALESCE(end_time, scheduled_at), '%Y-%m-%d %H:%i') AS slot_end
-       FROM defenses
-       WHERE scheduled_at < ?
-         AND COALESCE(end_time, scheduled_at) > ?
-         AND status NOT IN ('rejected', 'cancelled')
-       LIMIT 1`,
-      [normalizedEnd.dbValue, normalizedStart.dbValue]
-    );
+    // ── Overlap check (skip if coordinator chose to force or hold) ────────
+    if (!forceSchedule && !holdDefense) {
+      const candidateTotalMinutes = Math.round(
+        (normalizedEnd.dateValue.getTime() - normalizedStart.dateValue.getTime()) / 60000
+      );
 
-    if (overlapRows.length > 0) {
-      await conn.rollback();
-      const c = overlapRows[0];
-      return {
-        error: `The time slot ${normalizedStart.dbValue.slice(0, 16)} – ${normalizedEnd.dbValue.slice(0, 16)} overlaps with an existing defense (${c.slot_start} – ${c.slot_end}). Please choose a different time.`,
-        status: 409,
-      };
+      // Check defenses table
+      const [overlapRows] = await conn.execute(
+        `SELECT id, project_id,
+                DATE_FORMAT(scheduled_at, '%Y-%m-%d %H:%i') AS slot_start,
+                DATE_FORMAT(COALESCE(end_time, scheduled_at), '%Y-%m-%d %H:%i') AS slot_end,
+                TIMESTAMPDIFF(MINUTE,
+                  GREATEST(scheduled_at, ?),
+                  LEAST(COALESCE(end_time, scheduled_at), ?)
+                ) AS overlap_minutes
+         FROM defenses
+         WHERE scheduled_at < ?
+           AND COALESCE(end_time, scheduled_at) > ?
+           AND status NOT IN ('rejected', 'cancelled')
+         LIMIT 5`,
+        [normalizedStart.dbValue, normalizedEnd.dbValue, normalizedEnd.dbValue, normalizedStart.dbValue]
+      );
+
+      // Check meetings table
+      const [meetingOverlapRows] = await conn.execute(
+        `SELECT id, project_id,
+                DATE_FORMAT(scheduled_at, '%Y-%m-%d %H:%i') AS slot_start,
+                DATE_FORMAT(COALESCE(end_time, scheduled_at), '%Y-%m-%d %H:%i') AS slot_end,
+                TIMESTAMPDIFF(MINUTE,
+                  GREATEST(scheduled_at, ?),
+                  LEAST(COALESCE(end_time, scheduled_at), ?)
+                ) AS overlap_minutes
+         FROM meetings
+         WHERE scheduled_at < ?
+           AND COALESCE(end_time, scheduled_at) > ?
+           AND status NOT IN ('rejected', 'cancelled')
+         LIMIT 5`,
+        [normalizedStart.dbValue, normalizedEnd.dbValue, normalizedEnd.dbValue, normalizedStart.dbValue]
+      );
+
+      const allOverlaps = [...overlapRows, ...meetingOverlapRows];
+
+      if (allOverlaps.length > 0) {
+        await conn.rollback();
+
+        const maxOverlapMinutes = allOverlaps.reduce(
+          (max, r) => Math.max(max, r.overlap_minutes || 0), 0
+        );
+        const effectiveMinutes = Math.max(0, candidateTotalMinutes - maxOverlapMinutes);
+
+        return {
+          conflict: true,
+          conflicts: allOverlaps.map((r) => ({
+            defense_id: r.id,
+            project_id: r.project_id,
+            start_time: r.slot_start,
+            end_time: r.slot_end,
+            overlap_minutes: r.overlap_minutes || 0,
+          })),
+          max_overlap_minutes: maxOverlapMinutes,
+          candidate_total_minutes: candidateTotalMinutes,
+          effective_minutes: effectiveMinutes,
+          message: 'Schedule overlap detected. Choose how to proceed.',
+          status: 409,
+        };
+      }
     }
 
-    // Also check the meetings table (adviser bookings live there)
-    const [meetingOverlapRows] = await conn.execute(
-      `SELECT id, project_id,
-              DATE_FORMAT(scheduled_at, '%Y-%m-%d %H:%i') AS slot_start,
-              DATE_FORMAT(COALESCE(end_time, scheduled_at), '%Y-%m-%d %H:%i') AS slot_end
-       FROM meetings
-       WHERE scheduled_at < ?
-         AND COALESCE(end_time, scheduled_at) > ?
-         AND status NOT IN ('rejected', 'cancelled')
-       LIMIT 1`,
-      [normalizedEnd.dbValue, normalizedStart.dbValue]
-    );
-
-    if (meetingOverlapRows.length > 0) {
-      await conn.rollback();
-      const c = meetingOverlapRows[0];
-      return {
-        error: `The time slot ${normalizedStart.dbValue.slice(0, 16)} – ${normalizedEnd.dbValue.slice(0, 16)} overlaps with an existing meeting (${c.slot_start} – ${c.slot_end}). Please choose a different time.`,
-        status: 409,
-      };
-    }
-
+    // ── Insert one defense per project ────────────────────────────────────
+    const insertStatus = holdDefense ? 'pending' : 'scheduled';
     const createdDefenses = [];
     const notifiedProjects = new Set();
 
@@ -925,8 +948,8 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
 
       await conn.execute(
         `INSERT INTO defenses (id, project_id, adviser_id, defense_type, scheduled_at, end_time, location, venue, status, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)`,
-        [defenseId, row.id, row.adviser_id, defenseType, normalizedStart.dbValue, normalizedEnd.dbValue, location, venue || null, coordinatorId]
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [defenseId, row.id, row.adviser_id, defenseType, normalizedStart.dbValue, normalizedEnd.dbValue, location, venue || null, insertStatus, coordinatorId]
       );
 
       const [defenseRows] = await conn.execute(
@@ -946,8 +969,12 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
         [row.id]
       );
 
-      const notifTitle = `${defenseType.charAt(0).toUpperCase() + defenseType.slice(1)} Defense Scheduled`;
-      const notifMessage = `A ${defenseType} defense for "${row.title}" has been scheduled on ${normalizedStart.dateValue.toLocaleDateString()} at ${normalizedStart.dateValue.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`;
+      const notifTitle = holdDefense
+        ? `${defenseType.charAt(0).toUpperCase() + defenseType.slice(1)} Defense Queued`
+        : `${defenseType.charAt(0).toUpperCase() + defenseType.slice(1)} Defense Scheduled`;
+      const notifMessage = holdDefense
+        ? `A ${defenseType} defense for "${row.title}" has been queued and will be scheduled when the slot opens.`
+        : `A ${defenseType} defense for "${row.title}" has been scheduled on ${normalizedStart.dateValue.toLocaleDateString()} at ${normalizedStart.dateValue.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`;
 
       for (const member of members) {
         await createNotification({
@@ -962,7 +989,7 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
     }
 
     await conn.commit();
-    return { data: { count: createdDefenses.length, defenses: createdDefenses } };
+    return { data: { count: createdDefenses.length, defenses: createdDefenses, status: insertStatus } };
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* ignore */ }
     throw err;
