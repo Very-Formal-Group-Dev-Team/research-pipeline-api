@@ -864,7 +864,7 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
     return { error: 'Course not found in your institution' };
   }
 
-  // Fetch all projects in the institution with their adviser (from project_members).
+  // Fetch all projects in the course with their adviser (from project_members).
   // Use GROUP BY to ensure one row per project even if multiple adviser members exist.
   // Falls back to project creator if no accepted adviser member exists.
   const { rows: projectAdviserRows } = await db.query(
@@ -875,13 +875,13 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
        ON pm.project_id = p.id
       AND pm.role = 'adviser'
       AND pm.status = 'accepted'
-     WHERE p.institution_id = ?
+     WHERE p.course_id = ?
      GROUP BY p.id, p.title, p.project_code, p.created_by`,
-    [institutionId]
+    [courseId]
   );
 
   if (projectAdviserRows.length === 0) {
-    return { error: 'No projects found for this institution.' };
+    return { error: 'No projects found for this course.' };
   }
 
   const conn = await db.pool.getConnection();

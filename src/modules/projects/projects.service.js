@@ -6,9 +6,15 @@ async function createProject({ title, abstract, keywords, researchType, program,
   try {
     await conn.beginTransaction();
 
+    const [roleRows] = await conn.execute(
+      `SELECT institution_id FROM user_roles WHERE user_id = ? LIMIT 1`,
+      [createdBy]
+    );
+    const institutionId = roleRows[0]?.institution_id || null;
+
     const [result] = await conn.execute(
-      `INSERT INTO projects (title, description, abstract, keywords, paper_standard, program, course, section, document_reference, created_by, status, project_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'thesis')`,
+      `INSERT INTO projects (title, description, abstract, keywords, paper_standard, program, course, section, document_reference, created_by, institution_id, status, project_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'thesis')`,
       [
         title,
         abstract,
@@ -20,6 +26,7 @@ async function createProject({ title, abstract, keywords, researchType, program,
         section || null,
         documentReference || null,
         createdBy,
+        institutionId,
       ]
     );
 
