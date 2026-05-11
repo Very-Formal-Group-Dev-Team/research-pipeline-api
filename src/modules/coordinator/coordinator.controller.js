@@ -113,11 +113,11 @@ async function listAllDefenses(req, res) {
 }
 
 async function verifyDefense(req, res) {
-  const { venue, verifiedSchedule, verifiedEndTime, notes, forceApprove } = req.body;
+  const { venue, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense } = req.body;
   const result = await coordinatorService.verifyDefense(
     req.params.defenseId,
     req.user.id,
-    { venue, verifiedSchedule, verifiedEndTime, notes, forceApprove }
+    { venue, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense }
   );
 
   if (result.error) {
@@ -157,18 +157,32 @@ async function setVenue(req, res) {
   return res.json(result.data);
 }
 
+async function deleteDefense(req, res) {
+  const result = await coordinatorService.deleteDefense(
+    req.params.defenseId,
+    req.institution.id
+  );
+  if (result.error) {
+    return res.status(result.status || 404).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
 async function createDefenseForCourse(req, res) {
   const { courseId } = req.params;
-  const { defenseType, scheduledAt, date, startTime, endTime, location, venue } = req.body;
+  const { defenseType, scheduledAt, date, startTime, endTime, location, venue, forceSchedule, holdDefense } = req.body;
 
   const result = await coordinatorService.createDefenseForCourse(
     req.institution.id,
     req.user.id,
-    { courseId, defenseType, scheduledAt, date, startTime, endTime, location, venue }
+    { courseId, defenseType, scheduledAt, date, startTime, endTime, location, venue, forceSchedule, holdDefense }
   );
 
   if (result.error) {
-    return res.status(400).json({ error: result.error });
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  if (result.conflict) {
+    return res.status(409).json(result);
   }
   return res.status(201).json(result.data);
 }
@@ -217,6 +231,7 @@ module.exports = {
   verifyDefense,
   rejectDefense,
   setVenue,
+  deleteDefense,
   createDefenseForCourse,
   bookDefenseSchedule,
   getInstitutionProjects,

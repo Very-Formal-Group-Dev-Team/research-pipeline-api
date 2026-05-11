@@ -36,6 +36,7 @@ router.post('/defenses/book', asyncHandler(controller.bookDefenseSchedule));
 router.post('/defenses/:defenseId/verify', asyncHandler(controller.verifyDefense));
 router.post('/defenses/:defenseId/reject', asyncHandler(controller.rejectDefense));
 router.patch('/defenses/:defenseId/venue', asyncHandler(controller.setVenue));
+router.delete('/defenses/:defenseId', asyncHandler(controller.deleteDefense));
 
 // Create defenses for entire course
 router.post('/courses/:courseId/defenses', asyncHandler(controller.createDefenseForCourse));

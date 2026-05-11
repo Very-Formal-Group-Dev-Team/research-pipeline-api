@@ -1,5 +1,6 @@
 const db = require('../../../config/db');
 const { createNotification } = require('../notifications/notifications.service');
+const { validateScheduleConstraints, getScheduleWindow } = require('../defenses/defenses.service');
 
 let defenseScheduleExprCache = null;
 
@@ -127,35 +128,6 @@ function normalizeDateTimeInput(value) {
   };
 }
 
-function getScheduleWindow(payload = {}) {
-  const startInput = payload.start_time ?? payload.scheduled_at ?? payload.scheduledAt ?? null;
-  const endInput = payload.end_time ?? payload.endTime ?? null;
-
-  if (!startInput) {
-    return { error: 'start_time is required' };
-  }
-
-  if (!endInput) {
-    return { error: 'end_time is required' };
-  }
-
-  const start = normalizeDateTimeInput(startInput);
-  if (!start) {
-    return { error: 'start_time must be a valid datetime value' };
-  }
-
-  const end = normalizeDateTimeInput(endInput);
-  if (!end) {
-    return { error: 'end_time must be a valid datetime value' };
-  }
-
-  if (end.dateValue <= start.dateValue) {
-    return { error: 'end_time must be after start_time' };
-  }
-
-  return { start, end };
-}
-
 function computeOverlapMinutes(rangeStart, rangeEnd, candidateStart, candidateEnd) {
   const overlapStart = Math.max(rangeStart.getTime(), candidateStart.getTime());
   const overlapEnd = Math.min(rangeEnd.getTime(), candidateEnd.getTime());
@@ -195,20 +167,28 @@ function buildCoordinatorConflictPayload(conflicts, startDate, endDate) {
 }
 
 async function getCoordinatorApprovalConflicts({ defenseId = null, projectId, memberIds, location, startAt, endAt, queryRunner }) {
-  const statuses = ['approved', 'moved', 'scheduled'];
+  // Parse input times
+  const startNorm = normalizeDateTimeInput(startAt);
+  const endNorm = normalizeDateTimeInput(endAt);
+  if (!startNorm || !endNorm) return [];
+
+  const startDate = startNorm.dateValue;
+  const endDate = endNorm.dateValue;
+
   const allConflicts = [];
 
+  // Check for overlapping defenses in the same project (any status, any time overlap)
   const [projectRows] = await queryRunner.execute(
     `SELECT id, project_id,
             scheduled_at AS start_time,
-            COALESCE(end_time, scheduled_at) AS end_time
+            COALESCE(end_time, scheduled_at) AS end_time,
+            status
      FROM defenses
      WHERE (? IS NULL OR id <> ?)
        AND project_id = ?
-       AND status IN (?, ?, ?)
        AND scheduled_at < ?
        AND COALESCE(end_time, scheduled_at) > ?`,
-    [defenseId, defenseId, projectId, ...statuses, endAt, startAt]
+    [defenseId, defenseId, projectId, endNorm.dbValue, startNorm.dbValue]
   );
 
   for (const row of projectRows) {
@@ -218,23 +198,25 @@ async function getCoordinatorApprovalConflicts({ defenseId = null, projectId, me
       project_id: row.project_id,
       start_time: row.start_time,
       end_time: row.end_time,
+      status: row.status,
       start_date: toDate(row.start_time),
       end_date: toDate(row.end_time || row.start_time),
     });
   }
 
+  // Check for room conflicts (any status, any time overlap)
   if (location && String(location).toLowerCase() !== 'online') {
     const [locationRows] = await queryRunner.execute(
       `SELECT id, project_id,
               scheduled_at AS start_time,
-              COALESCE(end_time, scheduled_at) AS end_time
+              COALESCE(end_time, scheduled_at) AS end_time,
+              status
        FROM defenses
        WHERE (? IS NULL OR id <> ?)
-         AND status IN (?, ?, ?)
          AND COALESCE(venue, location) = ?
          AND scheduled_at < ?
          AND COALESCE(end_time, scheduled_at) > ?`,
-      [defenseId, defenseId, ...statuses, location, endAt, startAt]
+      [defenseId, defenseId, location, endNorm.dbValue, startNorm.dbValue]
     );
 
     for (const row of locationRows) {
@@ -244,28 +226,30 @@ async function getCoordinatorApprovalConflicts({ defenseId = null, projectId, me
         project_id: row.project_id,
         start_time: row.start_time,
         end_time: row.end_time,
+        status: row.status,
         start_date: toDate(row.start_time),
         end_date: toDate(row.end_time || row.start_time),
       });
     }
   }
 
+  // Check for participant conflicts (any status, any time overlap)
   if (memberIds.length) {
     const memberPlaceholders = memberIds.map(() => '?').join(', ');
     const [participantRows] = await queryRunner.execute(
       `SELECT DISTINCT d.id, d.project_id,
-              scheduled_at AS start_time,
-              COALESCE(d.end_time, d.scheduled_at) AS end_time
+              d.scheduled_at AS start_time,
+              COALESCE(d.end_time, d.scheduled_at) AS end_time,
+              d.status
        FROM defenses d
        JOIN project_members pm
          ON pm.project_id = d.project_id
         AND pm.status = 'accepted'
        WHERE (? IS NULL OR d.id <> ?)
          AND pm.user_id IN (${memberPlaceholders})
-         AND d.status IN (?, ?, ?)
          AND d.scheduled_at < ?
          AND COALESCE(d.end_time, d.scheduled_at) > ?`,
-      [defenseId, defenseId, ...memberIds, ...statuses, endAt, startAt]
+      [defenseId, defenseId, ...memberIds, endNorm.dbValue, startNorm.dbValue]
     );
 
     for (const row of participantRows) {
@@ -275,6 +259,7 @@ async function getCoordinatorApprovalConflicts({ defenseId = null, projectId, me
         project_id: row.project_id,
         start_time: row.start_time,
         end_time: row.end_time,
+        status: row.status,
         start_date: toDate(row.start_time),
         end_date: toDate(row.end_time || row.start_time),
       });
@@ -597,7 +582,7 @@ async function getAllDefensesForInstitution(institutionId) {
   return rows.map(normalizeDefenseTimeRange);
 }
 
-async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule, verifiedEndTime, notes, forceApprove }) {
+async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense }) {
   const conn = await db.pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -645,17 +630,29 @@ async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule
       queryRunner: conn,
     });
 
-    if (conflicts.length && !forceApprove) {
+    if (conflicts.length && !forceApprove && !holdDefense) {
       await conn.rollback();
       return {
         data: buildCoordinatorConflictPayload(conflicts, proposedStartDate, proposedEndDate),
       };
     }
 
-    // Determine status: 'moved' if schedule was changed, otherwise 'approved'
-    const scheduleMoved = verifiedSchedule && verifiedSchedule !== defense.scheduled_at?.toISOString?.();
-    const newStatus = scheduleMoved ? 'moved' : 'approved';
-    const notifType = scheduleMoved ? 'defense_moved' : 'defense_approved';
+    // Determine status based on holdDefense flag and schedule changes
+    let newStatus = 'scheduled';
+    let notifType = 'defense_approved';
+    
+    if (holdDefense) {
+      newStatus = 'pending';
+      notifType = 'defense_pending';
+    } else if (forceApprove) {
+      newStatus = 'scheduled';
+      notifType = 'defense_approved';
+    } else {
+      // No conflict and no special handling - schedule immediately
+      const scheduleMoved = verifiedSchedule && verifiedSchedule !== defense.scheduled_at?.toISOString?.();
+      newStatus = scheduleMoved ? 'moved' : 'scheduled';
+      notifType = scheduleMoved ? 'defense_moved' : 'defense_approved';
+    }
 
     // Update defense schedule and status without requiring verification columns.
     await conn.execute(
@@ -692,12 +689,16 @@ async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule
     const timeStr = new Date(finalSchedule).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const modality = defense.modality || 'Online';
 
-    const notifTitle = scheduleMoved
-      ? `Defense Schedule Modified & Approved`
-      : `Defense Approved`;
-    const notifMessage = scheduleMoved
-      ? `The ${defense.defense_type} defense for "${defense.project_title}" has been approved with a new schedule: ${dateStr} at ${timeStr} (${modality}).`
-      : `The ${defense.defense_type} defense for "${defense.project_title}" has been approved for ${dateStr} at ${timeStr} (${modality}).`;
+    let notifTitle = 'Defense Approved';
+    let notifMessage = `The ${defense.defense_type} defense for "${defense.project_title}" has been approved for ${dateStr} at ${timeStr} (${modality}).`;
+
+    if (holdDefense) {
+      notifTitle = 'Defense Held in Queue';
+      notifMessage = `The ${defense.defense_type} defense for "${defense.project_title}" has been queued and will be scheduled when time slots become available. Proposed schedule: ${dateStr} at ${timeStr} (${modality}).`;
+    } else if (forceApprove && conflicts.length) {
+      notifTitle = 'Defense Confirmed Despite Conflicts';
+      notifMessage = `The ${defense.defense_type} defense for "${defense.project_title}" has been confirmed for ${dateStr} at ${timeStr} (${modality}).`;
+    }
 
     for (const member of members) {
       await createNotification({
@@ -788,6 +789,26 @@ async function setDefenseVenue(defenseId, coordinatorId, venue) {
   return { data: { success: true } };
 }
 
+async function deleteDefense(defenseId, institutionId) {
+  // Verify the defense belongs to a project in this institution
+  const { rows } = await db.query(
+    `SELECT d.id, d.status
+     FROM defenses d
+     JOIN projects p ON p.id = d.project_id
+     WHERE d.id = ? AND p.institution_id = ?
+     LIMIT 1`,
+    [defenseId, institutionId]
+  );
+
+  if (!rows[0]) {
+    return { error: 'Defense not found', status: 404 };
+  }
+
+  await db.query('DELETE FROM defenses WHERE id = ?', [defenseId]);
+
+  return { data: { success: true } };
+}
+
 // ─── Dashboard Stats ────────────────────────────────────────────────────────
 
 async function getCoordinatorStats(institutionId) {
@@ -822,7 +843,7 @@ async function getCoordinatorStats(institutionId) {
 }
 
 async function createDefenseForCourse(institutionId, coordinatorId, payload) {
-  const { courseId, defenseType, scheduledAt, date, startTime, endTime, location, venue } = payload;
+  const { courseId, defenseType, scheduledAt, date, startTime, endTime, location, venue, forceSchedule, holdDefense } = payload;
 
   if (!courseId) return { error: 'courseId is required' };
   if (!defenseType || !['proposal', 'midterm', 'final'].includes(defenseType)) {
@@ -843,108 +864,158 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
     return { error: 'Course not found in your institution' };
   }
 
-  // Resolve adviser IDs for the selected course first.
-  const { rows: courseAdviserRows } = await db.query(
-    `SELECT DISTINCT pm.user_id
-     FROM projects p
-     JOIN project_members pm
-       ON pm.project_id = p.id
-      AND pm.role = 'adviser'
-      AND pm.status = 'accepted'
-     WHERE p.institution_id = ?
-       AND p.course_id = ?`,
-    [institutionId, courseId]
-  );
-
-  let adviserIds = courseAdviserRows.map((row) => row.user_id);
-
-  // Fallback: if the selected course currently has no adviser-project links,
-  // use institution advisers and discover their advised projects.
-  if (!adviserIds.length) {
-    const { rows: institutionAdviserRows } = await db.query(
-      `SELECT DISTINCT user_id
-       FROM user_roles
-       WHERE institution_id = ?
-         AND role = 'adviser'`,
-      [institutionId]
-    );
-
-    adviserIds = institutionAdviserRows.map((row) => row.user_id);
-  }
-
-  if (!adviserIds.length) {
-    return { error: 'No advisers found for this institution.' };
-  }
-
-  const adviserPlaceholders = adviserIds.map(() => '?').join(', ');
-
+  // Fetch all projects in the institution with their adviser (from project_members).
+  // Use GROUP BY to ensure one row per project even if multiple adviser members exist.
+  // Falls back to project creator if no accepted adviser member exists.
   const { rows: projectAdviserRows } = await db.query(
-    `SELECT DISTINCT p.id, p.title, p.project_code, pm.user_id AS adviser_id
+    `SELECT p.id, p.title, p.project_code,
+            COALESCE(MIN(pm.user_id), p.created_by) AS adviser_id
      FROM projects p
-     JOIN project_members pm
+     LEFT JOIN project_members pm
        ON pm.project_id = p.id
       AND pm.role = 'adviser'
       AND pm.status = 'accepted'
      WHERE p.institution_id = ?
-       AND pm.user_id IN (${adviserPlaceholders})`,
-    [institutionId, ...adviserIds]
+     GROUP BY p.id, p.title, p.project_code, p.created_by`,
+    [institutionId]
   );
 
   if (projectAdviserRows.length === 0) {
-    return { error: 'No adviser-linked projects found for defense event creation.' };
+    return { error: 'No projects found for this institution.' };
   }
 
-  const createdDefenses = [];
-  const notifiedProjects = new Set();
+  const conn = await db.pool.getConnection();
+  try {
+    await conn.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+    await conn.beginTransaction();
 
-  for (const row of projectAdviserRows) {
-    await db.query(
-      `INSERT INTO defenses (id, project_id, adviser_id, defense_type, scheduled_at, end_time, location, venue, status, created_by)
-       VALUES (UUID(), ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)`,
-      [row.id, row.adviser_id, defenseType, normalizedStart.dbValue, normalizedEnd.dbValue, location, venue || null, coordinatorId]
-    );
+    // ── Overlap check (skip if coordinator chose to force or hold) ────────
+    if (!forceSchedule && !holdDefense) {
+      const candidateTotalMinutes = Math.round(
+        (normalizedEnd.dateValue.getTime() - normalizedStart.dateValue.getTime()) / 60000
+      );
 
-    const { rows: defenseRows } = await db.query(
-      `SELECT *
-       FROM defenses
-       WHERE project_id = ?
-         AND adviser_id = ?
-         AND created_by = ?
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [row.id, row.adviser_id, coordinatorId]
-    );
+      // Check defenses table
+      const [overlapRows] = await conn.execute(
+        `SELECT id, project_id,
+                DATE_FORMAT(scheduled_at, '%Y-%m-%d %H:%i') AS slot_start,
+                DATE_FORMAT(COALESCE(end_time, scheduled_at), '%Y-%m-%d %H:%i') AS slot_end,
+                TIMESTAMPDIFF(MINUTE,
+                  GREATEST(scheduled_at, ?),
+                  LEAST(COALESCE(end_time, scheduled_at), ?)
+                ) AS overlap_minutes
+         FROM defenses
+         WHERE scheduled_at < ?
+           AND COALESCE(end_time, scheduled_at) > ?
+           AND status NOT IN ('rejected', 'cancelled')
+         LIMIT 5`,
+        [normalizedStart.dbValue, normalizedEnd.dbValue, normalizedEnd.dbValue, normalizedStart.dbValue]
+      );
 
-    if (defenseRows[0]) {
-      createdDefenses.push({ ...defenseRows[0], project_title: row.title, project_code: row.project_code });
+      // Check meetings table
+      const [meetingOverlapRows] = await conn.execute(
+        `SELECT id, project_id,
+                DATE_FORMAT(scheduled_at, '%Y-%m-%d %H:%i') AS slot_start,
+                DATE_FORMAT(COALESCE(end_time, scheduled_at), '%Y-%m-%d %H:%i') AS slot_end,
+                TIMESTAMPDIFF(MINUTE,
+                  GREATEST(scheduled_at, ?),
+                  LEAST(COALESCE(end_time, scheduled_at), ?)
+                ) AS overlap_minutes
+         FROM meetings
+         WHERE scheduled_at < ?
+           AND COALESCE(end_time, scheduled_at) > ?
+           AND status NOT IN ('rejected', 'cancelled')
+         LIMIT 5`,
+        [normalizedStart.dbValue, normalizedEnd.dbValue, normalizedEnd.dbValue, normalizedStart.dbValue]
+      );
+
+      const allOverlaps = [...overlapRows, ...meetingOverlapRows];
+
+      if (allOverlaps.length > 0) {
+        await conn.rollback();
+
+        const maxOverlapMinutes = allOverlaps.reduce(
+          (max, r) => Math.max(max, r.overlap_minutes || 0), 0
+        );
+        const effectiveMinutes = Math.max(0, candidateTotalMinutes - maxOverlapMinutes);
+
+        return {
+          conflict: true,
+          conflicts: allOverlaps.map((r) => ({
+            defense_id: r.id,
+            project_id: r.project_id,
+            start_time: r.slot_start,
+            end_time: r.slot_end,
+            overlap_minutes: r.overlap_minutes || 0,
+          })),
+          max_overlap_minutes: maxOverlapMinutes,
+          candidate_total_minutes: candidateTotalMinutes,
+          effective_minutes: effectiveMinutes,
+          message: 'Schedule overlap detected. Choose how to proceed.',
+          status: 409,
+        };
+      }
     }
 
-    if (notifiedProjects.has(row.id)) {
-      continue;
+    // ── Insert one defense per project ────────────────────────────────────
+    const insertStatus = holdDefense ? 'pending' : 'scheduled';
+    const createdDefenses = [];
+    const notifiedProjects = new Set();
+
+    for (const row of projectAdviserRows) {
+      const [idRows] = await conn.execute('SELECT UUID() AS id');
+      const defenseId = idRows[0].id;
+
+      await conn.execute(
+        `INSERT INTO defenses (id, project_id, adviser_id, defense_type, scheduled_at, end_time, location, venue, status, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [defenseId, row.id, row.adviser_id, defenseType, normalizedStart.dbValue, normalizedEnd.dbValue, location, venue || null, insertStatus, coordinatorId]
+      );
+
+      const [defenseRows] = await conn.execute(
+        'SELECT * FROM defenses WHERE id = ? LIMIT 1',
+        [defenseId]
+      );
+
+      if (defenseRows[0]) {
+        createdDefenses.push({ ...defenseRows[0], project_title: row.title, project_code: row.project_code });
+      }
+
+      if (notifiedProjects.has(row.id)) continue;
+      notifiedProjects.add(row.id);
+
+      const [members] = await conn.execute(
+        'SELECT user_id FROM project_members WHERE project_id = ?',
+        [row.id]
+      );
+
+      const notifTitle = holdDefense
+        ? `${defenseType.charAt(0).toUpperCase() + defenseType.slice(1)} Defense Queued`
+        : `${defenseType.charAt(0).toUpperCase() + defenseType.slice(1)} Defense Scheduled`;
+      const notifMessage = holdDefense
+        ? `A ${defenseType} defense for "${row.title}" has been queued and will be scheduled when the slot opens.`
+        : `A ${defenseType} defense for "${row.title}" has been scheduled on ${normalizedStart.dateValue.toLocaleDateString()} at ${normalizedStart.dateValue.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`;
+
+      for (const member of members) {
+        await createNotification({
+          userId: member.user_id,
+          type: 'schedule',
+          title: notifTitle,
+          message: notifMessage,
+          metadata: { projectId: row.id },
+          conn,
+        });
+      }
     }
 
-    notifiedProjects.add(row.id);
-
-    const { rows: members } = await db.query(
-      'SELECT user_id FROM project_members WHERE project_id = ?',
-      [row.id]
-    );
-
-    const notifTitle = `${defenseType.charAt(0).toUpperCase() + defenseType.slice(1)} Defense Scheduled`;
-    const notifMessage = `A ${defenseType} defense for "${row.title}" has been scheduled on ${normalizedStart.dateValue.toLocaleDateString()} at ${normalizedStart.dateValue.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`;
-
-    for (const member of members) {
-      await createNotification({
-        userId: member.user_id,
-        type: 'schedule',
-        title: notifTitle,
-        message: notifMessage,
-        metadata: { projectId: row.id },
-      });
-    }
+    await conn.commit();
+    return { data: { count: createdDefenses.length, defenses: createdDefenses, status: insertStatus } };
+  } catch (err) {
+    try { await conn.rollback(); } catch (_) { /* ignore */ }
+    throw err;
+  } finally {
+    conn.release();
   }
-
-  return { data: { count: createdDefenses.length, defenses: createdDefenses } };
 }
 
 async function createCoordinatorDefenseBooking(institutionId, coordinatorId, payload) {
@@ -1148,6 +1219,7 @@ module.exports = {
   verifyDefense,
   rejectDefense,
   setDefenseVenue,
+  deleteDefense,
   getCoordinatorStats,
   createDefenseForCourse,
   createCoordinatorDefenseBooking,
