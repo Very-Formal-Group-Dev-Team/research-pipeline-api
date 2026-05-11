@@ -1,4 +1,4 @@
-const { createDefense, getDefensesByUser, getDefensesForMember, cancelDefense, rescheduleDefense } = require('./defenses.service');
+const { createDefense, getDefensesByUser, getDefensesForMember, getProjectDefenseSchedules, cancelDefense, rescheduleDefense } = require('./defenses.service');
 
 async function postDefense(req, res) {
   const body = req.body || {};
@@ -75,7 +75,7 @@ async function patchRescheduleDefense(req, res) {
 }
 
 async function getMyProjectDefenses(req, res) {
-  const defenses = await getDefensesForMember(req.user.id);
+  const defenses = await getProjectDefenseSchedules(req.user.id);
   return res.json(defenses);
 }
 

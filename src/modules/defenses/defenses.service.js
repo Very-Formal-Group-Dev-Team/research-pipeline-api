@@ -735,6 +735,41 @@ async function getDefensesForMember(userId) {
   return rows;
 }
 
+async function getProjectDefenseSchedules(userId) {
+  const { rows } = await db.query(
+    `SELECT d.id,
+            d.project_id,
+            p.title AS project_title,
+            p.project_code,
+            d.defense_type,
+            d.scheduled_at AS start_time,
+            COALESCE(d.end_time, d.scheduled_at) AS end_time,
+            d.location,
+            d.venue,
+            d.status,
+          d.created_by,
+            CASE
+              WHEN d.status = 'scheduled' THEN 'Scheduled'
+              WHEN d.status = 'pending' THEN 'Pending'
+              WHEN d.status = 'cancelled' THEN 'Cancelled'
+              WHEN d.status = 'rescheduled' THEN 'Rescheduled'
+              WHEN d.status = 'completed' THEN 'Completed'
+              ELSE d.status
+            END AS status_label,
+            u.full_name AS created_by_name,
+            au.full_name AS adviser_name,
+            d.created_at
+     FROM defenses d
+     INNER JOIN projects p ON d.project_id = p.id
+     INNER JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+     LEFT JOIN users u ON d.created_by = u.id
+     LEFT JOIN users au ON d.adviser_id = au.id
+     ORDER BY d.scheduled_at DESC, d.created_at DESC`,
+    [userId]
+  );
+  return rows;
+}
+
 async function cancelDefense(userId, defenseId) {
   if (!defenseId) {
     return { error: 'defenseId is required', status: 400 };
@@ -1056,4 +1091,4 @@ async function processAllPendingDefenses() {
   }
 }
 
-module.exports = { createDefense, getDefensesByUser, getDefensesForMember, cancelDefense, rescheduleDefense, validateScheduleConstraints, getScheduleWindow };
+module.exports = { createDefense, getDefensesByUser, getDefensesForMember, getProjectDefenseSchedules, cancelDefense, rescheduleDefense, validateScheduleConstraints, getScheduleWindow };
