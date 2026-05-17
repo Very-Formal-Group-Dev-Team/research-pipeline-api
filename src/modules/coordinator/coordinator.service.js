@@ -552,11 +552,12 @@ async function getPendingDefenses(institutionId) {
             u.full_name AS created_by_name
      FROM defenses d
      INNER JOIN projects p ON d.project_id = p.id
+     LEFT JOIN courses c ON p.course_id = c.id
      LEFT JOIN users u ON d.created_by = u.id
-     WHERE p.institution_id = ?
+     WHERE (p.institution_id = ? OR c.institution_id = ?)
        AND d.status = 'pending'
      ORDER BY ${scheduleExpr} ASC`,
-    [institutionId]
+    [institutionId, institutionId]
   );
   return rows.map(normalizeDefenseTimeRange);
 }
@@ -573,11 +574,12 @@ async function getAllDefensesForInstitution(institutionId) {
             au.full_name AS adviser_name
      FROM defenses d
      INNER JOIN projects p ON d.project_id = p.id
+     LEFT JOIN courses c ON p.course_id = c.id
      LEFT JOIN users u ON d.created_by = u.id
      LEFT JOIN users au ON d.adviser_id = au.id
-     WHERE p.institution_id = ?
+     WHERE (p.institution_id = ? OR c.institution_id = ?)
      ORDER BY ${scheduleExpr} DESC`,
-    [institutionId]
+    [institutionId, institutionId]
   );
   return rows.map(normalizeDefenseTimeRange);
 }
@@ -795,9 +797,10 @@ async function deleteDefense(defenseId, institutionId) {
     `SELECT d.id, d.status
      FROM defenses d
      JOIN projects p ON p.id = d.project_id
-     WHERE d.id = ? AND p.institution_id = ?
+     LEFT JOIN courses c ON p.course_id = c.id
+     WHERE d.id = ? AND (p.institution_id = ? OR c.institution_id = ?)
      LIMIT 1`,
-    [defenseId, institutionId]
+    [defenseId, institutionId, institutionId]
   );
 
   if (!rows[0]) {
@@ -824,9 +827,10 @@ async function getCoordinatorStats(institutionId) {
     db.query(
       `SELECT COUNT(*) AS count FROM defenses d
        INNER JOIN projects p ON d.project_id = p.id
-       WHERE p.institution_id = ?
+       LEFT JOIN courses c ON p.course_id = c.id
+       WHERE (p.institution_id = ? OR c.institution_id = ?)
          AND d.status = 'pending'`,
-      [institutionId]
+      [institutionId, institutionId]
     ),
     db.query(
       'SELECT COUNT(*) AS count FROM courses WHERE institution_id = ?',
@@ -1042,11 +1046,12 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
   if (!location) return { error: 'location is required', status: 400 };
 
   const { rows: projectRows } = await db.query(
-    `SELECT id, title, project_code
-     FROM projects
-     WHERE id = ? AND institution_id = ?
+    `SELECT p.id, p.title, p.project_code
+     FROM projects p
+     LEFT JOIN courses c ON p.course_id = c.id
+     WHERE p.id = ? AND (p.institution_id = ? OR c.institution_id = ?)
      LIMIT 1`,
-    [resolvedProjectId, institutionId]
+    [resolvedProjectId, institutionId, institutionId]
   );
 
   const project = projectRows[0];
@@ -1155,9 +1160,9 @@ async function getProjectsByInstitution(institutionId) {
        c.course_name, c.code AS course_code
      FROM projects p
      LEFT JOIN courses c ON p.course_id = c.id
-     WHERE p.institution_id = ?
+     WHERE (p.institution_id = ? OR c.institution_id = ?)
      ORDER BY p.created_at DESC`,
-    [institutionId]
+    [institutionId, institutionId]
   );
   return rows;
 }
