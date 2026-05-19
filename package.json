@@ -33,6 +33,7 @@
   },
   "homepage": "https://github.com/urritomas/student-research-api#readme",
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@react-oauth/google": "^0.12.2",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
