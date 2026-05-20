@@ -1,6 +1,13 @@
 const db = require('../../../config/db');
 
-const NOTIFICATION_TYPES = new Set(['invitation', 'schedule', 'defense_approved', 'defense_rejected', 'defense_moved']);
+const NOTIFICATION_TYPES = new Set([
+  'invitation',
+  'schedule',
+  'defense_approved',
+  'defense_rejected',
+  'defense_moved',
+  'event',
+]);
 
 async function createNotification({ userId, type, title, message, metadata, conn = null }) {
   const notificationType = NOTIFICATION_TYPES.has(type) ? type : 'invitation';
