@@ -443,6 +443,42 @@ async function updateProjectStatus(projectId, status, userId) {
   return { data: project };
 }
 
+async function updateProjectKeywords(projectId, keywords) {
+  const conn = await db.pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.execute(
+      'UPDATE projects SET keywords = ?, updated_at = NOW() WHERE id = ?',
+      [JSON.stringify(keywords || []), projectId],
+    );
+    await conn.commit();
+    return { keywords: keywords || [] };
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+async function updateProjectAbstract(projectId, abstract) {
+  const conn = await db.pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.execute(
+      'UPDATE projects SET abstract = ?, description = ?, updated_at = NOW() WHERE id = ?',
+      [abstract, abstract, projectId],
+    );
+    await conn.commit();
+    return { abstract };
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
 module.exports = {
   createProject,
   getProjectsByUser,
@@ -463,4 +499,6 @@ module.exports = {
   getProjectFiles,
   getAdvisedProjects,
   updateProjectStatus,
+  updateProjectKeywords,
+  updateProjectAbstract,
 };

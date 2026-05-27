@@ -10,9 +10,8 @@ async function create(req, res) {
     if (!title || !title.trim()) {
       return res.status(400).json({ error: 'Project title is required' });
     }
-    if (!abstract || !abstract.trim()) {
-      return res.status(400).json({ error: 'Project abstract is required' });
-    }
+
+    const normalizedAbstract = typeof abstract === 'string' ? abstract.trim() : '';
 
     let parsedKeywords = [];
     if (keywords) {
@@ -25,7 +24,7 @@ async function create(req, res) {
 
     const project = await projectsService.createProject({
       title: title.trim(),
-      abstract: abstract.trim(),
+      abstract: normalizedAbstract,
       keywords: parsedKeywords,
       researchType: researchType || 'ieee',
       program: program || null,
@@ -302,6 +301,73 @@ async function updateStatus(req, res) {
   }
 }
 
+async function updateKeywords(req, res) {
+  try {
+    const projectId = req.params.id;
+    const { keywords } = req.body || {};
+
+    const project = await projectsService.getProjectById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const isMember = await projectsService.isProjectMember(projectId, req.user.id);
+    if (!isMember) {
+      return res.status(403).json({ error: 'You are not a member of this project' });
+    }
+
+    let parsedKeywords = [];
+    if (Array.isArray(keywords)) {
+      parsedKeywords = keywords
+        .map((k) => (typeof k === 'string' ? k.trim() : null))
+        .filter((k) => k);
+    } else if (typeof keywords === 'string') {
+      try {
+        const asArray = JSON.parse(keywords);
+        parsedKeywords = Array.isArray(asArray)
+          ? asArray.map((k) => (typeof k === 'string' ? k.trim() : null)).filter((k) => k)
+          : [];
+      } catch {
+        parsedKeywords = [];
+      }
+    }
+
+    const result = await projectsService.updateProjectKeywords(projectId, parsedKeywords);
+    return res.json({ success: true, keywords: result.keywords || parsedKeywords });
+  } catch (err) {
+    console.error('projects.controller – updateKeywords error:', err);
+    return res.status(500).json({ error: 'Failed to update keywords' });
+  }
+}
+
+async function updateAbstract(req, res) {
+  try {
+    const projectId = req.params.id;
+    const { abstract } = req.body || {};
+    const normalizedAbstract = typeof abstract === 'string' ? abstract.trim() : '';
+
+    const project = await projectsService.getProjectById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const isMember = await projectsService.isProjectMember(projectId, req.user.id);
+    if (!isMember) {
+      return res.status(403).json({ error: 'You are not a member of this project' });
+    }
+
+    if (!normalizedAbstract) {
+      return res.status(400).json({ error: 'Project abstract cannot be empty' });
+    }
+
+    const result = await projectsService.updateProjectAbstract(projectId, normalizedAbstract);
+    return res.json({ success: true, abstract: result.abstract });
+  } catch (err) {
+    console.error('projects.controller – updateAbstract error:', err);
+    return res.status(500).json({ error: 'Failed to update abstract' });
+  }
+}
+
 module.exports = {
   create,
   list,
@@ -316,4 +382,6 @@ module.exports = {
   getInvitations,
   scheduleDefense,
   updateStatus,
+  updateKeywords,
+  updateAbstract,
 };
