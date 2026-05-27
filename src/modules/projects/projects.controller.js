@@ -113,9 +113,8 @@ async function create(req, res) {
     if (!title || !title.trim()) {
       return res.status(400).json({ error: 'Project title is required' });
     }
-    if (!abstract || !abstract.trim()) {
-      return res.status(400).json({ error: 'Project abstract is required' });
-    }
+
+    const normalizedAbstract = typeof abstract === 'string' ? abstract.trim() : '';
 
     let parsedKeywords = [];
     if (keywords) {
@@ -128,7 +127,7 @@ async function create(req, res) {
 
     const project = await projectsService.createProject({
       title: title.trim(),
-      abstract: abstract.trim(),
+      abstract: normalizedAbstract,
       keywords: parsedKeywords,
       researchType: researchType || 'ieee',
       program: program || null,
@@ -443,6 +442,37 @@ async function updateKeywords(req, res) {
   }
 }
 
+async function updateAbstract(req, res) {
+  try {
+    const projectId = req.params.id;
+    const userRole = await getRoleByUserId(req.user.id);
+    if (userRole !== 'student') {
+      return res.status(403).json({ error: 'Only students can update project abstract' });
+    }
+
+    const isMember = await projectsService.isProjectMember(projectId, req.user.id);
+    if (!isMember) {
+      return res.status(403).json({ error: 'You are not a member of this project' });
+    }
+
+    const project = await projectsService.getProjectById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const abstract = typeof req.body?.abstract === 'string' ? req.body.abstract.trim() : '';
+    if (!abstract) {
+      return res.status(400).json({ error: 'Project abstract cannot be empty' });
+    }
+
+    const result = await projectsService.updateProjectAbstract(projectId, abstract);
+    return res.json({ success: true, abstract: result.abstract });
+  } catch (err) {
+    console.error('projects.controller – updateAbstract error:', err);
+    return res.status(500).json({ error: 'Failed to update project abstract' });
+  }
+}
+
 async function findRelatedStudies(req, res) {
   try {
     const projectId = req.params.id;
@@ -598,6 +628,7 @@ module.exports = {
   scheduleDefense,
   updateStatus,
   updateKeywords,
+  updateAbstract,
   findRelatedStudies,
   crossReferenceStudies,
 };
