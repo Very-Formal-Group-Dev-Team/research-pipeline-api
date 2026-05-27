@@ -61,6 +61,38 @@ async function getPaperVersionById(projectId, versionId) {
   return rows[0] || null;
 }
 
+async function getProjectTemplateData(projectId) {
+  const { rows } = await db.query(
+    `SELECT p.*, i.name AS institution_name, creator.full_name AS creator_name, creator.email AS creator_email
+     FROM projects p
+     LEFT JOIN institutions i ON i.id = p.institution_id
+     LEFT JOIN users creator ON creator.id = p.created_by
+     WHERE p.id = ?
+     LIMIT 1`,
+    [projectId],
+  );
+
+  const project = rows[0] || null;
+  if (!project) {
+    return null;
+  }
+
+  const { rows: memberRows } = await db.query(
+    `SELECT pm.role, pm.status, u.full_name, u.email
+     FROM project_members pm
+     JOIN users u ON u.id = pm.user_id
+     WHERE pm.project_id = ? AND pm.status = 'accepted'
+     ORDER BY CASE pm.role WHEN 'leader' THEN 0 WHEN 'adviser' THEN 1 ELSE 2 END, pm.invited_at ASC`,
+    [projectId],
+  );
+
+  return {
+    project,
+    members: memberRows,
+    institution: project.institution_name ? { name: project.institution_name } : null,
+  };
+}
+
 /** Check whether the current user is a member of the project. */
 async function isProjectMember(projectId, userId) {
   const { rows } = await db.query(
@@ -85,4 +117,4 @@ async function getPreviousVersion(projectId, versionNumber) {
   return rows[0] || null;
 }
 
-module.exports = { createPaperVersion, getPaperVersions, getPaperVersionById, getPreviousVersion, isProjectMember };
+module.exports = { createPaperVersion, getPaperVersions, getPaperVersionById, getPreviousVersion, isProjectMember, getProjectTemplateData };

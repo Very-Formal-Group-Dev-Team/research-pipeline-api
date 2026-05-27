@@ -4,8 +4,7 @@ const crypto = require('crypto');
 const mammoth = require('mammoth');
 const Diff = require('diff');
 const paperVersionsService = require('./paper_versions.service');
-const { generateDocxTemplate } = require('./template.generator');
-const { getProjectById } = require('../projects/projects.service');
+const { editTemplate } = require('./template.editor');
 const { uploadBase } = require('../../../config/env');
 
 const FILES_DIR = path.join(uploadBase, 'files');
@@ -72,10 +71,12 @@ async function generate(req, res) {
     return res.status(403).json({ error: 'You are not a member of this project' });
   }
 
-  const project = await getProjectById(projectId);
-  if (!project) {
+  const templateData = await paperVersionsService.getProjectTemplateData(projectId);
+  if (!templateData) {
     return res.status(404).json({ error: 'Project not found' });
   }
+
+  const { project, members, institution } = templateData;
 
   const { commitMessage } = req.body;
   const message = (commitMessage && commitMessage.trim())
@@ -84,7 +85,20 @@ async function generate(req, res) {
 
   ensureFilesDir();
 
-  const buffer = await generateDocxTemplate(project.paper_standard, project.title);
+  const buffer = await editTemplate({
+    paper_standard: project.paper_standard,
+    title: project.title,
+    abstract: project.abstract,
+    description: project.description,
+    keywords: project.keywords,
+    program: project.program,
+    course: project.course,
+    section: project.section,
+    creator_name: project.creator_name,
+    creator_email: project.creator_email,
+    members,
+    institution,
+  });
   const filename = `${req.user.id}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.docx`;
   const destPath = path.join(FILES_DIR, filename);
   fs.writeFileSync(destPath, buffer);

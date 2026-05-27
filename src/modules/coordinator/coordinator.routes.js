@@ -1,6 +1,7 @@
 const express = require('express');
 const { requireAuth } = require('../../middleware/auth');
 const controller = require('./coordinator.controller');
+const eventsController = require('../events/events.controller');
 
 const router = express.Router();
 
@@ -44,5 +45,10 @@ router.post('/courses/:courseId/defenses', asyncHandler(controller.createDefense
 // Projects
 router.get('/projects', asyncHandler(controller.getInstitutionProjects));
 router.get('/projects/by-adviser', asyncHandler(controller.getProjectsByAdviser));
+
+// Institution calendar events
+router.get('/events', asyncHandler(eventsController.listEvents));
+router.post('/events', asyncHandler(eventsController.createEvent));
+router.patch('/events/:eventId/cancel', asyncHandler(eventsController.cancelEvent));
 
 module.exports = router;

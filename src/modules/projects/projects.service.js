@@ -134,6 +134,25 @@ async function getProjectFiles(projectId) {
   return rows;
 }
 
+async function getLatestPaperVersion(projectId) {
+  const { rows } = await db.query(
+    `SELECT *
+     FROM paper_versions
+     WHERE project_id = ?
+     ORDER BY version_number DESC, created_at DESC
+     LIMIT 1`,
+    [projectId]
+  );
+  return rows[0] || null;
+}
+
+async function updateProjectKeywords(projectId, keywords) {
+  await db.query(
+    'UPDATE projects SET keywords = ?, updated_at = NOW() WHERE id = ?',
+    [JSON.stringify(keywords || []), projectId]
+  );
+}
+
 async function getProjectByCode(projectCode) {
   const { rows } = await db.query(
     'SELECT * FROM projects WHERE project_code = ? LIMIT 1',
@@ -443,24 +462,6 @@ async function updateProjectStatus(projectId, status, userId) {
   return { data: project };
 }
 
-async function updateProjectKeywords(projectId, keywords) {
-  const conn = await db.pool.getConnection();
-  try {
-    await conn.beginTransaction();
-    await conn.execute(
-      'UPDATE projects SET keywords = ?, updated_at = NOW() WHERE id = ?',
-      [JSON.stringify(keywords || []), projectId],
-    );
-    await conn.commit();
-    return { keywords: keywords || [] };
-  } catch (err) {
-    await conn.rollback();
-    throw err;
-  } finally {
-    conn.release();
-  }
-}
-
 async function updateProjectAbstract(projectId, abstract) {
   const conn = await db.pool.getConnection();
   try {
@@ -497,8 +498,9 @@ module.exports = {
   addProjectFile,
   updateProjectDocumentRef,
   getProjectFiles,
+  getLatestPaperVersion,
+  updateProjectKeywords,
   getAdvisedProjects,
   updateProjectStatus,
-  updateProjectKeywords,
   updateProjectAbstract,
 };

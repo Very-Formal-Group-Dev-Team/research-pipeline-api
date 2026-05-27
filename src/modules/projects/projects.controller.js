@@ -1,7 +1,110 @@
 const path = require('path');
 const fs = require('fs');
+const mammoth = require('mammoth');
 const projectsService = require('./projects.service');
 const { getRoleByUserId } = require('../users/users.service');
+const { uploadBase } = require('../../../config/env');
+
+const FILES_DIR = path.join(uploadBase, 'files');
+
+function resolvePaperFilePath(fileUrl) {
+  const filename = path.basename(fileUrl || '');
+  const absolutePath = path.join(FILES_DIR, filename);
+  const normalizedPath = path.normalize(absolutePath);
+  const normalizedDir = path.normalize(FILES_DIR);
+
+  if (!normalizedPath.startsWith(normalizedDir)) {
+    throw new Error('Invalid file path');
+  }
+
+  return absolutePath;
+}
+
+async function extractPaperText(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.docx') {
+    const result = await mammoth.extractRawText({ path: filePath });
+    return result.value || '';
+  }
+  if (ext === '.txt') {
+    return fs.readFileSync(filePath, 'utf8');
+  }
+  return '';
+}
+
+function normalizeBaseUrl(value) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function getKeywordModelBaseUrls() {
+  const configured = normalizeBaseUrl(process.env.KEYWORD_MODEL_URL);
+  const fallback = [
+    configured,
+    'http://keyword-model:8000',
+    'http://keyword_model:8000',
+    'http://host.docker.internal:8000',
+    'http://localhost:8000',
+  ].filter(Boolean);
+
+  return Array.from(new Set(fallback));
+}
+
+function getKeywordsFromPaperText(candidateKeywords, extractedText, topK = 10) {
+  if (!Array.isArray(candidateKeywords) || !candidateKeywords.length) {
+    return [];
+  }
+
+  const normalizedText = ` ${String(extractedText || '').toLowerCase()} `;
+  const filtered = candidateKeywords
+    .map((item) => String(item).trim().toLowerCase())
+    .filter(Boolean)
+    .filter((keyword, index, list) => list.indexOf(keyword) === index)
+    .filter((keyword) => normalizedText.includes(` ${keyword} `));
+
+  return filtered.slice(0, topK);
+}
+
+async function callKeywordModel(extractedText) {
+  const baseUrls = getKeywordModelBaseUrls();
+  const attempted = [];
+  let lastError = null;
+
+  for (const baseUrl of baseUrls) {
+    attempted.push(baseUrl);
+    try {
+      let response = await fetch(`${baseUrl}/predict-keywords-detailed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: extractedText, top_k: 10 }),
+      });
+
+      if (response.status === 404) {
+        response = await fetch(`${baseUrl}/predict-keywords`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: extractedText, top_k: 10 }),
+        });
+      }
+
+      if (!response.ok) {
+        const body = await response.text();
+        lastError = `Keyword model at ${baseUrl} returned ${response.status}: ${body || response.statusText}`;
+        continue;
+      }
+
+      const modelOutput = await response.json();
+      return { modelOutput, baseUrl };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown connection error';
+      lastError = `Keyword model at ${baseUrl} is unreachable: ${message}`;
+    }
+  }
+
+  return {
+    error: lastError || 'Keyword model is unreachable',
+    attempted,
+  };
+}
 
 async function create(req, res) {
   try {
@@ -304,11 +407,9 @@ async function updateStatus(req, res) {
 async function updateKeywords(req, res) {
   try {
     const projectId = req.params.id;
-    const { keywords } = req.body || {};
-
-    const project = await projectsService.getProjectById(projectId);
-    if (!project) {
-      return res.status(404).json({ error: 'Project not found' });
+    const userRole = await getRoleByUserId(req.user.id);
+    if (userRole !== 'student') {
+      return res.status(403).json({ error: 'Only students can update project keywords' });
     }
 
     const isMember = await projectsService.isProjectMember(projectId, req.user.id);
@@ -316,39 +417,37 @@ async function updateKeywords(req, res) {
       return res.status(403).json({ error: 'You are not a member of this project' });
     }
 
-    let parsedKeywords = [];
-    if (Array.isArray(keywords)) {
-      parsedKeywords = keywords
-        .map((k) => (typeof k === 'string' ? k.trim() : null))
-        .filter((k) => k);
-    } else if (typeof keywords === 'string') {
-      try {
-        const asArray = JSON.parse(keywords);
-        parsedKeywords = Array.isArray(asArray)
-          ? asArray.map((k) => (typeof k === 'string' ? k.trim() : null)).filter((k) => k)
-          : [];
-      } catch {
-        parsedKeywords = [];
-      }
+    const project = await projectsService.getProjectById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
     }
 
-    const result = await projectsService.updateProjectKeywords(projectId, parsedKeywords);
-    return res.json({ success: true, keywords: result.keywords || parsedKeywords });
+    const keywords = Array.isArray(req.body?.keywords)
+      ? req.body.keywords
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+      : null;
+
+    if (!keywords) {
+      return res.status(400).json({ error: 'keywords must be an array of strings' });
+    }
+
+    const uniqueKeywords = Array.from(new Set(keywords)).slice(0, 30);
+    await projectsService.updateProjectKeywords(projectId, uniqueKeywords);
+
+    return res.json({ success: true, keywords: uniqueKeywords });
   } catch (err) {
     console.error('projects.controller – updateKeywords error:', err);
-    return res.status(500).json({ error: 'Failed to update keywords' });
+    return res.status(500).json({ error: 'Failed to update project keywords' });
   }
 }
 
 async function updateAbstract(req, res) {
   try {
     const projectId = req.params.id;
-    const { abstract } = req.body || {};
-    const normalizedAbstract = typeof abstract === 'string' ? abstract.trim() : '';
-
-    const project = await projectsService.getProjectById(projectId);
-    if (!project) {
-      return res.status(404).json({ error: 'Project not found' });
+    const userRole = await getRoleByUserId(req.user.id);
+    if (userRole !== 'student') {
+      return res.status(403).json({ error: 'Only students can update project abstract' });
     }
 
     const isMember = await projectsService.isProjectMember(projectId, req.user.id);
@@ -356,15 +455,161 @@ async function updateAbstract(req, res) {
       return res.status(403).json({ error: 'You are not a member of this project' });
     }
 
-    if (!normalizedAbstract) {
+    const project = await projectsService.getProjectById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const abstract = typeof req.body?.abstract === 'string' ? req.body.abstract.trim() : '';
+    if (!abstract) {
       return res.status(400).json({ error: 'Project abstract cannot be empty' });
     }
 
-    const result = await projectsService.updateProjectAbstract(projectId, normalizedAbstract);
+    const result = await projectsService.updateProjectAbstract(projectId, abstract);
     return res.json({ success: true, abstract: result.abstract });
   } catch (err) {
     console.error('projects.controller – updateAbstract error:', err);
-    return res.status(500).json({ error: 'Failed to update abstract' });
+    return res.status(500).json({ error: 'Failed to update project abstract' });
+  }
+}
+
+async function findRelatedStudies(req, res) {
+  try {
+    const projectId = req.params.id;
+    const userRole = await getRoleByUserId(req.user.id);
+    if (userRole !== 'student') {
+      return res.status(403).json({ error: 'Only students can run this action' });
+    }
+
+    const isMember = await projectsService.isProjectMember(projectId, req.user.id);
+    if (!isMember) {
+      return res.status(403).json({ error: 'You are not a member of this project' });
+    }
+
+    const project = await projectsService.getProjectById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const latestVersion = await projectsService.getLatestPaperVersion(projectId);
+    if (!latestVersion) {
+      return res.status(400).json({ error: 'No paper version found for this project' });
+    }
+
+    const filePath = resolvePaperFilePath(latestVersion.file_url);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Latest submitted file was not found on disk' });
+    }
+
+    const extractedText = await extractPaperText(filePath);
+    if (!extractedText.trim()) {
+      return res.status(400).json({ error: 'Could not extract text from the latest submitted file' });
+    }
+
+    const keywordModelResponse = await callKeywordModel(extractedText);
+    if (keywordModelResponse.error) {
+      return res.status(502).json({
+        error: keywordModelResponse.error,
+        attempted_urls: keywordModelResponse.attempted || [],
+      });
+    }
+
+    const modelOutput = keywordModelResponse.modelOutput;
+    const vectorizationTopTerms = Array.isArray(modelOutput?.vectorization?.top_terms)
+      ? modelOutput.vectorization.top_terms.map((item) => item?.term).filter(Boolean)
+      : [];
+    const modelKeywords = Array.isArray(modelOutput?.keywords)
+      ? modelOutput.keywords
+      : [];
+    const fallbackLabelKeywords = Array.isArray(modelOutput?.predicted_labels)
+      ? modelOutput.predicted_labels
+      : [];
+
+    let keywords = getKeywordsFromPaperText(modelKeywords, extractedText, 10);
+    if (!keywords.length) {
+      keywords = getKeywordsFromPaperText(vectorizationTopTerms, extractedText, 10);
+    }
+    if (!keywords.length) {
+      keywords = getKeywordsFromPaperText(fallbackLabelKeywords, extractedText, 10);
+    }
+
+    await projectsService.updateProjectKeywords(projectId, keywords);
+
+    const vectorization = modelOutput?.vectorization && typeof modelOutput.vectorization === 'object'
+      ? modelOutput.vectorization
+      : { message: 'Vectorization detail unavailable from keyword model endpoint' };
+
+    return res.json({
+      projectId,
+      latestVersion: {
+        id: latestVersion.id,
+        version_number: latestVersion.version_number,
+        file_name: latestVersion.file_name,
+        created_at: latestVersion.created_at,
+      },
+      keyword_model_url: keywordModelResponse.baseUrl,
+      keywords,
+      vectorization,
+    });
+  } catch (err) {
+    console.error('projects.controller – findRelatedStudies error:', err);
+    return res.status(500).json({ error: 'Failed to process related studies keyword detection' });
+  }
+}
+
+async function crossReferenceStudies(req, res) {
+  try {
+    const projectId = req.params.id;
+    const userRole = await getRoleByUserId(req.user.id);
+    if (userRole !== 'student') {
+      return res.status(403).json({ error: 'Only students can run cross-referencing' });
+    }
+
+    const isMember = await projectsService.isProjectMember(projectId, req.user.id);
+    if (!isMember) {
+      return res.status(403).json({ error: 'You are not a member of this project' });
+    }
+
+    const project = await projectsService.getProjectById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const keywords = typeof project.keywords === 'string'
+      ? JSON.parse(project.keywords || '[]')
+      : (project.keywords || []);
+    const sanitizedKeywords = Array.isArray(keywords)
+      ? keywords.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+
+    if (!sanitizedKeywords.length) {
+      return res.status(400).json({ error: 'No keywords found. Add keywords first before cross-referencing.' });
+    }
+
+    const searchTerm = sanitizedKeywords.join(' ');
+    const params = new URLSearchParams({
+      search: searchTerm,
+      select: 'display_name,authorships,publication_date,primary_location,doi',
+    });
+    params.set('per-page', '20');
+
+    const response = await fetch(`https://api.openalex.org/works?${params.toString()}`);
+    if (!response.ok) {
+      const body = await response.text();
+      return res.status(502).json({ error: `OpenAlex request failed: ${body || response.statusText}` });
+    }
+
+    const payload = await response.json();
+    const studies = Array.isArray(payload?.results) ? payload.results : [];
+
+    return res.json({
+      query: searchTerm,
+      total: studies.length,
+      studies,
+    });
+  } catch (err) {
+    console.error('projects.controller – crossReferenceStudies error:', err);
+    return res.status(500).json({ error: 'Failed to fetch cross-referenced studies' });
   }
 }
 
@@ -384,4 +629,6 @@ module.exports = {
   updateStatus,
   updateKeywords,
   updateAbstract,
+  findRelatedStudies,
+  crossReferenceStudies,
 };

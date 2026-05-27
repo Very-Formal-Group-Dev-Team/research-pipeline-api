@@ -35,9 +35,11 @@ router.get('/:id/members', asyncHandler(controller.getMembers));
 router.get('/:id/files', asyncHandler(controller.getFiles));
 router.get('/:id/invitations', asyncHandler(controller.getInvitations));
 router.post('/:id/invite', asyncHandler(controller.invite));
+router.post('/:id/find-related-studies', asyncHandler(controller.findRelatedStudies));
+router.get('/:id/cross-reference', asyncHandler(controller.crossReferenceStudies));
+router.patch('/:id/keywords', asyncHandler(controller.updateKeywords));
 router.post('/:id/schedule', asyncHandler(controller.scheduleDefense));
 router.patch('/:id/status', asyncHandler(controller.updateStatus));
-router.patch('/:id/keywords', asyncHandler(controller.updateKeywords));
 router.patch('/:id/abstract', asyncHandler(controller.updateAbstract));
 router.use('/:id/paper-versions', paperVersionsRouter);
 
