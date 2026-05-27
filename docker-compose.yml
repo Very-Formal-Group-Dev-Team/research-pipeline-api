@@ -32,6 +32,24 @@ services:
       start_period: 30s
 
   # ──────────────────────────────────────────────
+  # Python Keyword Model
+  # ──────────────────────────────────────────────
+  keyword-model:
+    build:
+      context: .
+      dockerfile: models/keyword_model/Dockerfile
+    container_name: student-research-keyword-model
+    networks:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ──────────────────────────────────────────────
   # Node.js API  (service name = "app" so you can
   # run: docker compose restart app)
   # ──────────────────────────────────────────────
@@ -54,10 +72,13 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       API_ORIGIN: ${API_ORIGIN:-http://localhost:4000}
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+      KEYWORD_MODEL_URL: ${KEYWORD_MODEL_URL:-http://keyword-model:8000}
     ports:
       - "${API_PORT:-4000}:4000"
     depends_on:
       db:
+        condition: service_healthy
+      keyword-model:
         condition: service_healthy
     networks:
       - backend
