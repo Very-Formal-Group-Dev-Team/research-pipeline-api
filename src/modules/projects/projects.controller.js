@@ -212,6 +212,24 @@ async function getOne(req, res) {
   }
 }
 
+async function getByCode(req, res) {
+  try {
+    const project = await projectsService.getProjectByCode(req.params.code);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    project.keywords = typeof project.keywords === 'string'
+      ? JSON.parse(project.keywords)
+      : (project.keywords || []);
+
+    return res.json(project);
+  } catch (err) {
+    console.error('projects.controller – getByCode error:', err);
+    return res.status(500).json({ error: 'Failed to fetch project by code' });
+  }
+}
+
 async function getMembers(req, res) {
   try {
     const members = await projectsService.getProjectMembers(req.params.id);
@@ -618,6 +636,7 @@ module.exports = {
   list,
   listAdvised,
   getOne,
+  getByCode,
   getMembers,
   getFiles,
   join,
