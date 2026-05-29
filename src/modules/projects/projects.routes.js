@@ -26,6 +26,7 @@ function handleDocumentUpload(req, res, next) {
 router.use(requireAuth);
 router.post('/', handleDocumentUpload, asyncHandler(controller.create));
 router.post('/join', asyncHandler(controller.join));
+router.get('/code/:code', asyncHandler(controller.getByCode));
 router.get('/invitations', asyncHandler(controller.getMyInvitations));
 router.post('/invitations/:invitationId/respond', asyncHandler(controller.respondInvitation));
 router.get('/', asyncHandler(controller.list));
