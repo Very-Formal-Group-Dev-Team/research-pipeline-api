@@ -29,6 +29,10 @@ router.get('/courses', asyncHandler(controller.listCourses));
 router.post('/courses', asyncHandler(controller.createCourse));
 router.put('/courses/:courseId', asyncHandler(controller.updateCourse));
 router.delete('/courses/:courseId', asyncHandler(controller.deleteCourse));
+router.delete(
+  '/courses/:courseId/advisers/:adviserId',
+  asyncHandler(controller.removeAdviserFromCourse)
+);
 
 // Defense verification
 router.get('/defenses', asyncHandler(controller.listAllDefenses));
@@ -45,6 +49,11 @@ router.post('/courses/:courseId/defenses', asyncHandler(controller.createDefense
 // Projects
 router.get('/projects', asyncHandler(controller.getInstitutionProjects));
 router.get('/projects/by-adviser', asyncHandler(controller.getProjectsByAdviser));
+router.get('/rubrics', asyncHandler(controller.listRubrics));
+router.get('/rubrics/:rubricId', asyncHandler(controller.getRubric));
+router.post('/rubrics', asyncHandler(controller.createRubric));
+router.put('/rubrics/:rubricId', asyncHandler(controller.updateRubric));
+router.delete('/rubrics/:rubricId', asyncHandler(controller.deleteRubric));
 
 // Institution calendar events
 router.get('/events', asyncHandler(eventsController.listEvents));

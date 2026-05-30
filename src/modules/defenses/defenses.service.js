@@ -622,9 +622,9 @@ async function createDefense(userId, payload) {
     const defenseId = idRows[0].id;
 
     await conn.execute(
-      `INSERT INTO ${ADVISER_BOOKING_TABLE} (id, project_id, defense_type, scheduled_at, end_time, location, modality, status, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [defenseId, project_id, defense_type, normalizedSchedule.dbValue, normalizedEnd.dbValue, location, modality || 'Online', status, userId]
+      `INSERT INTO ${ADVISER_BOOKING_TABLE} (id, project_id, adviser_id, defense_type, scheduled_at, end_time, location, modality, status, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [defenseId, project_id, userId, defense_type, normalizedSchedule.dbValue, normalizedEnd.dbValue, location, modality || 'Online', status, userId]
     );
 
     const [rows] = await conn.execute(
@@ -757,13 +757,21 @@ async function getProjectDefenseSchedules(userId) {
               ELSE d.status
             END AS status_label,
             u.full_name AS created_by_name,
-            au.full_name AS adviser_name,
+            (
+              SELECT u2.full_name
+              FROM project_members pm2
+              INNER JOIN users u2 ON u2.id = pm2.user_id
+              WHERE pm2.project_id = d.project_id
+                AND pm2.role = 'adviser'
+                AND pm2.status = 'accepted'
+              ORDER BY pm2.invited_at ASC
+              LIMIT 1
+            ) AS adviser_name,
             d.created_at
      FROM defenses d
      INNER JOIN projects p ON d.project_id = p.id
      INNER JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
      LEFT JOIN users u ON d.created_by = u.id
-     LEFT JOIN users au ON d.adviser_id = au.id
      ORDER BY d.scheduled_at DESC, d.created_at DESC`,
     [userId]
   );
