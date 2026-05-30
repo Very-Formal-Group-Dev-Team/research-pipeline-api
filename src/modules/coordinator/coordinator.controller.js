@@ -54,10 +54,23 @@ async function removeAdviser(req, res) {
   return res.json({ success: true });
 }
 
+async function removeAdviserFromCourse(req, res) {
+  const { courseId, adviserId } = req.params;
+  const result = await coordinatorService.removeAdviserFromCourse(
+    req.institution.id,
+    courseId,
+    adviserId
+  );
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
 // ─── Courses ────────────────────────────────────────────────────────────────
 
 async function listCourses(req, res) {
-  const courses = await coordinatorService.getCoursesByInstitution(req.institution.id);
+  const courses = await coordinatorService.getCoursesWithAdvisersByInstitution(req.institution.id);
   return res.json(courses);
 }
 
@@ -215,6 +228,57 @@ async function getProjectsByAdviser(req, res) {
   return res.json(advisers);
 }
 
+async function listRubrics(req, res) {
+  const rubrics = await coordinatorService.listRubrics(req.institution.id);
+  return res.json(rubrics);
+}
+
+async function getRubric(req, res) {
+  const result = await coordinatorService.getCoordinatorRubricById(
+    req.institution.id,
+    req.params.rubricId
+  );
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
+async function createRubric(req, res) {
+  const result = await coordinatorService.createCoordinatorRubric(
+    req.institution.id,
+    req.user.id,
+    req.body
+  );
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.status(201).json(result.data);
+}
+
+async function updateRubric(req, res) {
+  const result = await coordinatorService.updateCoordinatorRubric(
+    req.institution.id,
+    req.params.rubricId,
+    req.body
+  );
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
+async function deleteRubric(req, res) {
+  const result = await coordinatorService.deleteCoordinatorRubric(
+    req.institution.id,
+    req.params.rubricId
+  );
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
 module.exports = {
   requireCoordinator,
   getDashboard,
@@ -222,6 +286,7 @@ module.exports = {
   getAdvisers,
   addAdviser,
   removeAdviser,
+  removeAdviserFromCourse,
   listCourses,
   createCourse,
   updateCourse,
@@ -236,4 +301,9 @@ module.exports = {
   bookDefenseSchedule,
   getInstitutionProjects,
   getProjectsByAdviser,
+  listRubrics,
+  getRubric,
+  createRubric,
+  updateRubric,
+  deleteRubric,
 };

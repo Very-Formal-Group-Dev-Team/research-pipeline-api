@@ -370,9 +370,9 @@ async function createDefenseSchedule({ projectId, defenseType, scheduledAt, loca
     await conn.beginTransaction();
 
     await conn.execute(
-      `INSERT INTO defenses (project_id, adviser_id, defense_type, scheduled_at, location, status, created_by)
-       VALUES (?, ?, ?, ?, ?, 'scheduled', ?)`,
-      [projectId, createdBy, defenseType, scheduledAt, location || null, createdBy]
+      `INSERT INTO defenses (project_id, defense_type, scheduled_at, location, status, created_by)
+       VALUES (?, ?, ?, ?, 'scheduled', ?)`,
+      [projectId, defenseType, scheduledAt, location || null, createdBy]
     );
 
     const [rows] = await conn.execute(

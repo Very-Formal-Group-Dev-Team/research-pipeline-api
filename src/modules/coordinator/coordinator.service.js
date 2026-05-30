@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const db = require('../../../config/db');
 const { createNotification } = require('../notifications/notifications.service');
 const { validateScheduleConstraints, getScheduleWindow } = require('../defenses/defenses.service');
@@ -166,7 +167,45 @@ function buildCoordinatorConflictPayload(conflicts, startDate, endDate) {
   };
 }
 
-async function getCoordinatorApprovalConflicts({ defenseId = null, projectId, memberIds, location, startAt, endAt, queryRunner }) {
+const INACTIVE_DEFENSE_STATUSES = ['cancelled', 'rejected', 'completed'];
+
+function buildConflictQueryExtras({ tableAlias = '', excludeDefenseIds = [], excludeProjectIds = [] } = {}) {
+  const prefix = tableAlias ? `${tableAlias}.` : '';
+  const parts = [`${prefix}status NOT IN (${INACTIVE_DEFENSE_STATUSES.map(() => '?').join(', ')})`];
+  const params = [...INACTIVE_DEFENSE_STATUSES];
+
+  if (excludeDefenseIds.length) {
+    parts.push(`${prefix}id NOT IN (${excludeDefenseIds.map(() => '?').join(', ')})`);
+    params.push(...excludeDefenseIds);
+  }
+
+  if (excludeProjectIds.length) {
+    parts.push(`${prefix}project_id NOT IN (${excludeProjectIds.map(() => '?').join(', ')})`);
+    params.push(...excludeProjectIds);
+  }
+
+  return {
+    sql: parts.join(' AND '),
+    params,
+  };
+}
+
+function rangesOverlap(startA, endA, startB, endB) {
+  if (!startA || !endA || !startB || !endB) return false;
+  return startA < endB && endA > startB;
+}
+
+async function getCoordinatorApprovalConflicts({
+  defenseId = null,
+  projectId,
+  memberIds,
+  location,
+  startAt,
+  endAt,
+  queryRunner,
+  excludeDefenseIds = [],
+  excludeProjectIds = [],
+}) {
   // Parse input times
   const startNorm = normalizeDateTimeInput(startAt);
   const endNorm = normalizeDateTimeInput(endAt);
@@ -177,7 +216,7 @@ async function getCoordinatorApprovalConflicts({ defenseId = null, projectId, me
 
   const allConflicts = [];
 
-  // Check for overlapping defenses in the same project (any status, any time overlap)
+  // Check for overlapping defenses in the same project (active defenses only)
   const [projectRows] = await queryRunner.execute(
     `SELECT id, project_id,
             scheduled_at AS start_time,
@@ -186,9 +225,11 @@ async function getCoordinatorApprovalConflicts({ defenseId = null, projectId, me
      FROM defenses
      WHERE (? IS NULL OR id <> ?)
        AND project_id = ?
+       AND status NOT IN (${INACTIVE_DEFENSE_STATUSES.map(() => '?').join(', ')})
+       AND scheduled_at IS NOT NULL
        AND scheduled_at < ?
        AND COALESCE(end_time, scheduled_at) > ?`,
-    [defenseId, defenseId, projectId, endNorm.dbValue, startNorm.dbValue]
+    [defenseId, defenseId, projectId, ...INACTIVE_DEFENSE_STATUSES, endNorm.dbValue, startNorm.dbValue]
   );
 
   for (const row of projectRows) {
@@ -204,8 +245,9 @@ async function getCoordinatorApprovalConflicts({ defenseId = null, projectId, me
     });
   }
 
-  // Check for room conflicts (any status, any time overlap)
+  // Check for room conflicts (active defenses only; skip intra-batch course bookings)
   if (location && String(location).toLowerCase() !== 'online') {
+    const roomExtras = buildConflictQueryExtras({ excludeDefenseIds, excludeProjectIds });
     const [locationRows] = await queryRunner.execute(
       `SELECT id, project_id,
               scheduled_at AS start_time,
@@ -213,10 +255,12 @@ async function getCoordinatorApprovalConflicts({ defenseId = null, projectId, me
               status
        FROM defenses
        WHERE (? IS NULL OR id <> ?)
+         AND ${roomExtras.sql}
+         AND scheduled_at IS NOT NULL
          AND COALESCE(venue, location) = ?
          AND scheduled_at < ?
          AND COALESCE(end_time, scheduled_at) > ?`,
-      [defenseId, defenseId, location, endNorm.dbValue, startNorm.dbValue]
+      [defenseId, defenseId, ...roomExtras.params, location, endNorm.dbValue, startNorm.dbValue]
     );
 
     for (const row of locationRows) {
@@ -233,9 +277,14 @@ async function getCoordinatorApprovalConflicts({ defenseId = null, projectId, me
     }
   }
 
-  // Check for participant conflicts (any status, any time overlap)
+  // Check for participant conflicts (active defenses only; skip intra-batch course bookings)
   if (memberIds.length) {
     const memberPlaceholders = memberIds.map(() => '?').join(', ');
+    const participantExtras = buildConflictQueryExtras({
+      tableAlias: 'd',
+      excludeDefenseIds,
+      excludeProjectIds,
+    });
     const [participantRows] = await queryRunner.execute(
       `SELECT DISTINCT d.id, d.project_id,
               d.scheduled_at AS start_time,
@@ -246,10 +295,12 @@ async function getCoordinatorApprovalConflicts({ defenseId = null, projectId, me
          ON pm.project_id = d.project_id
         AND pm.status = 'accepted'
        WHERE (? IS NULL OR d.id <> ?)
+         AND ${participantExtras.sql}
+         AND d.scheduled_at IS NOT NULL
          AND pm.user_id IN (${memberPlaceholders})
          AND d.scheduled_at < ?
          AND COALESCE(d.end_time, d.scheduled_at) > ?`,
-      [defenseId, defenseId, ...memberIds, endNorm.dbValue, startNorm.dbValue]
+      [defenseId, defenseId, ...participantExtras.params, ...memberIds, endNorm.dbValue, startNorm.dbValue]
     );
 
     for (const row of participantRows) {
@@ -267,7 +318,7 @@ async function getCoordinatorApprovalConflicts({ defenseId = null, projectId, me
   }
 
   const deduped = Array.from(new Map(allConflicts.map((item) => [item.defense_id, item])).values());
-  return deduped;
+  return deduped.filter((item) => rangesOverlap(item.start_date, item.end_date, startDate, endDate));
 }
 
 // ─── Institution Management ─────────────────────────────────────────────────
@@ -345,12 +396,29 @@ async function addAdviserToInstitution(institutionId, adviserId, courseId, coord
     );
   }
 
+  await db.query(
+    `INSERT INTO course_advisers (id, course_id, user_id)
+     VALUES (UUID(), ?, ?)
+     ON DUPLICATE KEY UPDATE assigned_at = CURRENT_TIMESTAMP`,
+    [courseId, adviserId]
+  );
+
   const assignmentResult = await db.query(
     `INSERT INTO project_members (id, project_id, user_id, role, status, invited_at, responded_at)
      SELECT UUID(), p.id, ?, 'adviser', 'accepted', NOW(), NOW()
      FROM projects p
      WHERE p.institution_id = ?
-       AND p.course_id = ?
+       AND (
+         p.course_id = ?
+         OR EXISTS (
+           SELECT 1
+           FROM project_members pm
+           WHERE pm.project_id = p.id
+             AND pm.user_id = ?
+             AND pm.role = 'adviser'
+             AND pm.status = 'accepted'
+         )
+       )
        AND NOT EXISTS (
          SELECT 1
          FROM project_members pm
@@ -358,7 +426,23 @@ async function addAdviserToInstitution(institutionId, adviserId, courseId, coord
            AND pm.user_id = ?
            AND pm.role = 'adviser'
        )`,
-    [adviserId, institutionId, courseId, adviserId]
+    [adviserId, institutionId, courseId, adviserId, adviserId]
+  );
+
+  await db.query(
+    `UPDATE projects p
+     SET p.course_id = ?
+     WHERE p.institution_id = ?
+       AND p.course_id IS NULL
+       AND EXISTS (
+         SELECT 1
+         FROM project_members pm
+         WHERE pm.project_id = p.id
+           AND pm.user_id = ?
+           AND pm.role = 'adviser'
+           AND pm.status = 'accepted'
+       )`,
+    [courseId, institutionId, adviserId]
   );
 
   const { rows: coordinatorRows } = await db.query(
@@ -386,6 +470,45 @@ async function addAdviserToInstitution(institutionId, adviserId, courseId, coord
       success: true,
       course_id: courseId,
       assigned_projects: assignmentResult.rows?.affectedRows || 0,
+    },
+  };
+}
+
+async function removeAdviserFromCourse(institutionId, courseId, adviserId) {
+  const course = await getCourseById(courseId);
+  if (!course || course.institution_id !== institutionId) {
+    return { error: 'Course not found in your institution', status: 404 };
+  }
+
+  const { rows: roleRows } = await db.query(
+    `SELECT ur.id FROM user_roles ur
+     WHERE ur.user_id = ? AND ur.role = 'adviser' AND ur.institution_id = ?
+     LIMIT 1`,
+    [adviserId, institutionId]
+  );
+  if (!roleRows.length) {
+    return { error: 'Adviser not found in your institution', status: 404 };
+  }
+
+  await db.query(
+    'DELETE FROM course_advisers WHERE course_id = ? AND user_id = ?',
+    [courseId, adviserId]
+  );
+
+  const result = await db.query(
+    `DELETE pm FROM project_members pm
+     INNER JOIN projects p ON p.id = pm.project_id
+     WHERE pm.user_id = ?
+       AND pm.role = 'adviser'
+       AND p.institution_id = ?
+       AND p.course_id = ?`,
+    [adviserId, institutionId, courseId]
+  );
+
+  return {
+    data: {
+      success: true,
+      removed_assignments: result.rows?.affectedRows ?? 0,
     },
   };
 }
@@ -430,12 +553,97 @@ async function getCoursesByInstitution(institutionId) {
   return rows;
 }
 
+async function getCoursesWithAdvisersByInstitution(institutionId) {
+  const courses = await getCoursesByInstitution(institutionId);
+  if (!courses.length) return [];
+
+  const { rows: adviserRows } = await db.query(
+    `SELECT DISTINCT course_id, id, email, full_name, avatar_url
+     FROM (
+       SELECT ca.course_id, u.id, u.email, u.full_name, u.avatar_url
+       FROM course_advisers ca
+       INNER JOIN courses c ON c.id = ca.course_id
+       INNER JOIN users u ON u.id = ca.user_id
+       WHERE c.institution_id = ?
+       UNION
+       SELECT p.course_id, u.id, u.email, u.full_name, u.avatar_url
+       FROM project_members pm
+       INNER JOIN projects p ON p.id = pm.project_id
+       INNER JOIN users u ON u.id = pm.user_id
+       WHERE p.institution_id = ?
+         AND p.course_id IS NOT NULL
+         AND pm.role = 'adviser'
+         AND pm.status = 'accepted'
+     ) advisers
+     WHERE course_id IS NOT NULL
+     ORDER BY full_name ASC`,
+    [institutionId, institutionId]
+  );
+
+  const advisersByCourse = new Map();
+  for (const row of adviserRows) {
+    if (!advisersByCourse.has(row.course_id)) {
+      advisersByCourse.set(row.course_id, []);
+    }
+    const list = advisersByCourse.get(row.course_id);
+    if (!list.some((a) => a.id === row.id)) {
+      list.push({
+        id: row.id,
+        email: row.email,
+        full_name: row.full_name,
+        avatar_url: row.avatar_url,
+      });
+    }
+  }
+
+  return courses.map((course) => ({
+    ...course,
+    advisers: advisersByCourse.get(course.id) || [],
+  }));
+}
+
 async function getCourseById(courseId) {
   const { rows } = await db.query(
     'SELECT * FROM courses WHERE id = ? LIMIT 1',
     [courseId]
   );
   return rows[0] || null;
+}
+
+/** Projects tied to a course by course_id or via course_advisers + accepted adviser membership. */
+async function getProjectsForCourseInInstitution(institutionId, courseId) {
+  const { rows } = await db.query(
+    `SELECT DISTINCT p.id, p.title, p.project_code
+     FROM projects p
+     LEFT JOIN courses pc ON pc.id = p.course_id
+     WHERE (
+       p.course_id = ?
+       OR EXISTS (
+         SELECT 1
+         FROM course_advisers ca
+         INNER JOIN project_members pm
+           ON pm.project_id = p.id
+          AND pm.user_id = ca.user_id
+          AND pm.role = 'adviser'
+          AND pm.status = 'accepted'
+         WHERE ca.course_id = ?
+       )
+     )
+     AND (
+       p.institution_id = ?
+       OR pc.institution_id = ?
+       OR EXISTS (
+         SELECT 1
+         FROM project_members pm2
+         INNER JOIN user_roles ur ON ur.user_id = pm2.user_id
+         WHERE pm2.project_id = p.id
+           AND ur.institution_id = ?
+       )
+     )
+     ORDER BY p.title ASC`,
+    [courseId, courseId, institutionId, institutionId, institutionId]
+  );
+  return rows;
 }
 
 async function createCourse(institutionId, { courseName, code, description }) {
@@ -571,12 +779,20 @@ async function getAllDefensesForInstitution(institutionId) {
             ${scheduleExpr} AS start_time,
             COALESCE(d.end_time, ${scheduleExpr}) AS end_time,
             u.full_name AS created_by_name,
-            au.full_name AS adviser_name
+            (
+              SELECT u2.full_name
+              FROM project_members pm2
+              INNER JOIN users u2 ON u2.id = pm2.user_id
+              WHERE pm2.project_id = d.project_id
+                AND pm2.role = 'adviser'
+                AND pm2.status = 'accepted'
+              ORDER BY pm2.invited_at ASC
+              LIMIT 1
+            ) AS adviser_name
      FROM defenses d
      INNER JOIN projects p ON d.project_id = p.id
      LEFT JOIN courses c ON p.course_id = c.id
      LEFT JOIN users u ON d.created_by = u.id
-     LEFT JOIN users au ON d.adviser_id = au.id
      WHERE (p.institution_id = ? OR c.institution_id = ?)
      ORDER BY ${scheduleExpr} DESC`,
     [institutionId, institutionId]
@@ -871,6 +1087,13 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
   // Fetch all projects in the course with their adviser (from project_members).
   // Use GROUP BY to ensure one row per project even if multiple adviser members exist.
   // Falls back to project creator if no accepted adviser member exists.
+  const courseProjects = await getProjectsForCourseInInstitution(institutionId, courseId);
+  if (!courseProjects.length) {
+    return { error: 'No projects found for this course.' };
+  }
+
+  const projectIds = courseProjects.map((p) => p.id);
+  const placeholders = projectIds.map(() => '?').join(', ');
   const { rows: projectAdviserRows } = await db.query(
     `SELECT p.id, p.title, p.project_code,
             COALESCE(MIN(pm.user_id), p.created_by) AS adviser_id
@@ -879,14 +1102,10 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
        ON pm.project_id = p.id
       AND pm.role = 'adviser'
       AND pm.status = 'accepted'
-     WHERE p.course_id = ?
+     WHERE p.id IN (${placeholders})
      GROUP BY p.id, p.title, p.project_code, p.created_by`,
-    [courseId]
+    projectIds
   );
-
-  if (projectAdviserRows.length === 0) {
-    return { error: 'No projects found for this course.' };
-  }
 
   const conn = await db.pool.getConnection();
   try {
@@ -971,9 +1190,9 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
       const defenseId = idRows[0].id;
 
       await conn.execute(
-        `INSERT INTO defenses (id, project_id, adviser_id, defense_type, scheduled_at, end_time, location, venue, status, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [defenseId, row.id, row.adviser_id, defenseType, normalizedStart.dbValue, normalizedEnd.dbValue, location, venue || null, insertStatus, coordinatorId]
+        `INSERT INTO defenses (id, project_id, defense_type, scheduled_at, end_time, location, venue, status, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [defenseId, row.id, defenseType, normalizedStart.dbValue, normalizedEnd.dbValue, location, venue || null, insertStatus, coordinatorId]
       );
 
       const [defenseRows] = await conn.execute(
@@ -1022,23 +1241,400 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
   }
 }
 
-async function createCoordinatorDefenseBooking(institutionId, coordinatorId, payload) {
+const COORDINATOR_RUBRIC_ROLE_FILTER = "(r.role = 'coordinator' OR r.role IS NULL)";
+
+function normalizeCriterionDescription(value) {
+  if (value === undefined || value === null) return null;
+  const trimmed = String(value).trim();
+  return trimmed.length ? trimmed : null;
+}
+
+function normalizeRubricCriteria(criteria) {
+  if (!Array.isArray(criteria)) return [];
+  return criteria.map((row, index) => ({
+    criterion_name: String(row.criterion_name || row.criterionName || '').trim(),
+    description: normalizeCriterionDescription(row.description),
+    weight: Number(row.weight),
+    order: Number.isFinite(Number(row.order)) ? Number(row.order) : index,
+  }));
+}
+
+function validateRubricCriteria(criteria) {
+  const normalized = normalizeRubricCriteria(criteria);
+  if (!normalized.length) {
+    return { error: 'At least one criterion is required' };
+  }
+
+  let total = 0;
+  for (const row of normalized) {
+    if (!row.criterion_name) {
+      return { error: 'Each criterion must have a name' };
+    }
+    if (!Number.isFinite(row.weight) || row.weight <= 0) {
+      return { error: 'Each weight must be a positive number' };
+    }
+    total += row.weight;
+  }
+
+  if (Math.abs(total - 100) > 0.01) {
+    return { error: `Criterion weights must total 100% (current: ${Math.round(total * 100) / 100}%)` };
+  }
+
+  return { data: normalized };
+}
+
+async function getCoordinatorRubricById(institutionId, rubricId) {
+  const { rows } = await db.query(
+    `SELECT r.id, r.name, r.description, r.defense_type, r.role, r.created_by, r.created_at
+     FROM rubrics r
+     INNER JOIN user_roles ur ON ur.user_id = r.created_by
+     WHERE r.id = ?
+       AND ur.institution_id = ?
+       AND ${COORDINATOR_RUBRIC_ROLE_FILTER}
+     LIMIT 1`,
+    [rubricId, institutionId]
+  );
+
+  if (!rows.length) {
+    return { error: 'Rubric not found', status: 404 };
+  }
+
+  const { rows: criteria } = await db.query(
+    `SELECT id, rubric_id, criterion_name, weight, description, max_score, \`order\`
+     FROM rubric_criteria
+     WHERE rubric_id = ?
+     ORDER BY \`order\` ASC, criterion_name ASC`,
+    [rubricId]
+  );
+
+  return { data: { ...rows[0], criteria } };
+}
+
+async function listRubrics(institutionId) {
+  const { rows } = await db.query(
+    `SELECT r.id, r.name, r.description, r.defense_type, r.role, r.created_at,
+            COUNT(rc.id) AS criteria_count,
+            COALESCE(SUM(rc.weight), 0) AS total_weight
+     FROM rubrics r
+     INNER JOIN user_roles ur ON ur.user_id = r.created_by
+     LEFT JOIN rubric_criteria rc ON rc.rubric_id = r.id
+     WHERE ur.institution_id = ?
+       AND ${COORDINATOR_RUBRIC_ROLE_FILTER}
+     GROUP BY r.id, r.name, r.description, r.defense_type, r.role, r.created_at
+     ORDER BY r.defense_type ASC, r.name ASC`,
+    [institutionId]
+  );
+  return rows;
+}
+
+async function createCoordinatorRubric(institutionId, userId, payload) {
+  const name = String(payload.name || payload.rubricName || '').trim();
+  const description = String(payload.description ?? '').trim();
+  const defenseType = payload.defenseType || payload.defense_type;
+  const criteriaInput = payload.criteria;
+
+  if (!name) return { error: 'Rubric name is required', status: 400 };
+  if (!description) return { error: 'Rubric description is required', status: 400 };
+  if (!['proposal', 'midterm', 'final'].includes(defenseType)) {
+    return { error: 'defenseType must be proposal, midterm, or final', status: 400 };
+  }
+
+  const criteriaResult = validateRubricCriteria(criteriaInput);
+  if (criteriaResult.error) return { error: criteriaResult.error, status: 400 };
+
+  const rubricId = crypto.randomUUID();
+  const conn = await db.pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+    await conn.execute(
+      `INSERT INTO rubrics (id, name, description, defense_type, role, created_by)
+       VALUES (?, ?, ?, ?, 'coordinator', ?)`,
+      [rubricId, name, description, defenseType, userId]
+    );
+
+    for (const [index, row] of criteriaResult.data.entries()) {
+      await conn.execute(
+        `INSERT INTO rubric_criteria (id, rubric_id, criterion_name, description, weight, \`order\`)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          crypto.randomUUID(),
+          rubricId,
+          row.criterion_name,
+          row.description,
+          row.weight,
+          row.order ?? index,
+        ]
+      );
+    }
+
+    await conn.commit();
+    return getCoordinatorRubricById(institutionId, rubricId);
+  } catch (err) {
+    try { await conn.rollback(); } catch (_) { /* ignore */ }
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+async function updateCoordinatorRubric(institutionId, rubricId, payload) {
+  const existing = await getCoordinatorRubricById(institutionId, rubricId);
+  if (existing.error) return existing;
+
+  const name = String(payload.name || payload.rubricName || existing.data.name).trim();
+  const description = String(
+    payload.description !== undefined ? payload.description : existing.data.description ?? ''
+  ).trim();
+  const defenseType = payload.defenseType || payload.defense_type || existing.data.defense_type;
+  const criteriaInput = payload.criteria ?? existing.data.criteria;
+
+  if (!name) return { error: 'Rubric name is required', status: 400 };
+  if (!description) return { error: 'Rubric description is required', status: 400 };
+  if (!['proposal', 'midterm', 'final'].includes(defenseType)) {
+    return { error: 'defenseType must be proposal, midterm, or final', status: 400 };
+  }
+
+  const criteriaResult = validateRubricCriteria(criteriaInput);
+  if (criteriaResult.error) return { error: criteriaResult.error, status: 400 };
+
+  const conn = await db.pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+    await conn.execute(
+      'UPDATE rubrics SET name = ?, description = ?, defense_type = ? WHERE id = ?',
+      [name, description, defenseType, rubricId]
+    );
+    await conn.execute('DELETE FROM rubric_criteria WHERE rubric_id = ?', [rubricId]);
+
+    for (const [index, row] of criteriaResult.data.entries()) {
+      await conn.execute(
+        `INSERT INTO rubric_criteria (id, rubric_id, criterion_name, description, weight, \`order\`)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          crypto.randomUUID(),
+          rubricId,
+          row.criterion_name,
+          row.description,
+          row.weight,
+          row.order ?? index,
+        ]
+      );
+    }
+
+    await conn.commit();
+    return getCoordinatorRubricById(institutionId, rubricId);
+  } catch (err) {
+    try { await conn.rollback(); } catch (_) { /* ignore */ }
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+async function deleteCoordinatorRubric(institutionId, rubricId) {
+  const existing = await getCoordinatorRubricById(institutionId, rubricId);
+  if (existing.error) return existing;
+
+  const { rows: usageRows } = await db.query(
+    'SELECT COUNT(*) AS usage_count FROM defenses WHERE rubric_id = ?',
+    [rubricId]
+  );
+  if (usageRows[0]?.usage_count > 0) {
+    return { error: 'Cannot delete a rubric that is assigned to a defense', status: 409 };
+  }
+
+  const conn = await db.pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.execute('DELETE FROM rubric_criteria WHERE rubric_id = ?', [rubricId]);
+    await conn.execute('DELETE FROM rubrics WHERE id = ?', [rubricId]);
+    await conn.commit();
+    return { data: { success: true } };
+  } catch (err) {
+    try { await conn.rollback(); } catch (_) { /* ignore */ }
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+async function createCoordinatorDefenseBookingForCourse(institutionId, coordinatorId, payload) {
   const {
-    projectId,
-    project_id,
+    courseId,
+    course_id,
+    rubricId,
+    rubric_id,
     defenseType,
     defense_type,
     location,
     venue,
     modality,
     forceApprove,
+    date,
+    startTime,
+    endTime,
+    scheduledAt,
+    start_time,
+    end_time,
+  } = payload || {};
+
+  const resolvedCourseId = courseId || course_id;
+  const resolvedRubricId = rubricId || rubric_id || null;
+  const resolvedDefenseType = defenseType || defense_type;
+  const startInput = scheduledAt || start_time || (date && startTime ? `${date}T${startTime}` : null);
+  const endInput = end_time || (date && endTime ? `${date}T${endTime}` : null);
+  const scheduleWindow = getScheduleWindow({ start_time: startInput, end_time: endInput });
+
+  if (!resolvedCourseId) return { error: 'courseId is required', status: 400 };
+  if (!resolvedDefenseType || !['proposal', 'midterm', 'final'].includes(resolvedDefenseType)) {
+    return { error: 'defenseType must be one of: proposal, midterm, final', status: 400 };
+  }
+  if (scheduleWindow.error) return { error: scheduleWindow.error, status: 400 };
+  if (!location) return { error: 'location is required', status: 400 };
+
+  const course = await getCourseById(resolvedCourseId);
+  if (!course || course.institution_id !== institutionId) {
+    return { error: 'Course not found in your institution', status: 404 };
+  }
+
+  if (resolvedRubricId) {
+    const { rows: rubricRows } = await db.query(
+      `SELECT r.id
+       FROM rubrics r
+       INNER JOIN user_roles ur ON ur.user_id = r.created_by
+       WHERE r.id = ? AND ur.institution_id = ?
+       LIMIT 1`,
+      [resolvedRubricId, institutionId]
+    );
+    if (!rubricRows.length) {
+      return { error: 'Rubric not found in your institution', status: 404 };
+    }
+  }
+
+  const projectRows = await getProjectsForCourseInInstitution(institutionId, resolvedCourseId);
+
+  if (!projectRows.length) {
+    return { error: 'No projects found for this course.', status: 400 };
+  }
+
+  const normalizedStart = scheduleWindow.start;
+  const normalizedEnd = scheduleWindow.end;
+  const conn = await db.pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+    const createdDefenses = [];
+    const batchProjectIds = projectRows.map((p) => p.id);
+    const batchDefenseIds = [];
+
+    for (const project of projectRows) {
+      const [memberRows] = await conn.execute(
+        `SELECT user_id FROM project_members WHERE project_id = ? AND status = 'accepted'`,
+        [project.id]
+      );
+
+      const conflicts = await getCoordinatorApprovalConflicts({
+        defenseId: null,
+        projectId: project.id,
+        memberIds: memberRows.map((m) => m.user_id),
+        location: venue || location,
+        startAt: normalizedStart.dbValue,
+        endAt: normalizedEnd.dbValue,
+        queryRunner: conn,
+        excludeProjectIds: batchProjectIds,
+        excludeDefenseIds: batchDefenseIds,
+      });
+
+      if (conflicts.length && !forceApprove) {
+        await conn.rollback();
+        return {
+          data: buildCoordinatorConflictPayload(conflicts, normalizedStart.dateValue, normalizedEnd.dateValue),
+        };
+      }
+
+      const [idRows] = await conn.execute('SELECT UUID() AS id');
+      const defenseId = idRows[0].id;
+
+      await conn.execute(
+        `INSERT INTO defenses (
+          id, project_id, defense_type, rubric_id, scheduled_at, end_time, location, venue, modality,
+          status, created_by
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?)`,
+        [
+          defenseId,
+          project.id,
+          resolvedDefenseType,
+          resolvedRubricId,
+          normalizedStart.dbValue,
+          normalizedEnd.dbValue,
+          location,
+          venue || null,
+          modality || 'Online',
+          coordinatorId,
+        ]
+      );
+
+      createdDefenses.push({ id: defenseId, project_title: project.title, project_code: project.project_code });
+      batchDefenseIds.push(defenseId);
+
+      for (const member of memberRows) {
+        await createNotification({
+          userId: member.user_id,
+          type: 'schedule',
+          title: `${resolvedDefenseType.charAt(0).toUpperCase() + resolvedDefenseType.slice(1)} Defense Scheduled`,
+          message: `The ${resolvedDefenseType} defense for "${project.title}" has been scheduled.`,
+          metadata: { defenseId, projectId: project.id, courseId: resolvedCourseId },
+          conn,
+        });
+      }
+    }
+
+    await conn.commit();
+    return { data: createdDefenses[0] || { count: createdDefenses.length } };
+  } catch (err) {
+    try { await conn.rollback(); } catch (_) { /* ignore */ }
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+async function createCoordinatorDefenseBooking(institutionId, coordinatorId, payload) {
+  const courseId = payload?.courseId || payload?.course_id;
+  if (courseId) {
+    return createCoordinatorDefenseBookingForCourse(institutionId, coordinatorId, payload);
+  }
+
+  const {
+    projectId,
+    project_id,
+    rubricId,
+    rubric_id,
+    defenseType,
+    defense_type,
+    location,
+    venue,
+    modality,
+    forceApprove,
+    date,
+    startTime,
+    endTime,
+    scheduledAt,
+    start_time,
+    end_time,
   } = payload || {};
 
   const resolvedProjectId = projectId || project_id;
+  const resolvedRubricId = rubricId || rubric_id || null;
   const resolvedDefenseType = defenseType || defense_type;
-  const scheduleWindow = getScheduleWindow(payload || {});
+  const startInput = scheduledAt || start_time || (date && startTime ? `${date}T${startTime}` : null);
+  const endInput = end_time || (date && endTime ? `${date}T${endTime}` : null);
+  const scheduleWindow = getScheduleWindow({ start_time: startInput, end_time: endInput });
 
-  if (!resolvedProjectId) return { error: 'projectId is required', status: 400 };
+  if (!resolvedProjectId) return { error: 'projectId or courseId is required', status: 400 };
   if (!resolvedDefenseType || !['proposal', 'midterm', 'final'].includes(resolvedDefenseType)) {
     return { error: 'defenseType must be one of: proposal, midterm, final', status: 400 };
   }
@@ -1057,6 +1653,20 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
   const project = projectRows[0];
   if (!project) {
     return { error: 'Project not found in your institution', status: 404 };
+  }
+
+  if (resolvedRubricId) {
+    const { rows: rubricRows } = await db.query(
+      `SELECT r.id
+       FROM rubrics r
+       INNER JOIN user_roles ur ON ur.user_id = r.created_by
+       WHERE r.id = ? AND ur.institution_id = ?
+       LIMIT 1`,
+      [resolvedRubricId, institutionId]
+    );
+    if (!rubricRows.length) {
+      return { error: 'Rubric not found in your institution', status: 404 };
+    }
   }
 
   const normalizedStart = scheduleWindow.start;
@@ -1097,21 +1707,20 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
 
     await conn.execute(
       `INSERT INTO defenses (
-        id, project_id, defense_type, scheduled_at, end_time, location, venue, modality,
-        status, verified_by, verified_at, verified_schedule, created_by
+        id, project_id, defense_type, rubric_id, scheduled_at, end_time, location, venue, modality,
+        status, created_by
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, NOW(), ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?)`,
       [
         defenseId,
         resolvedProjectId,
         resolvedDefenseType,
+        resolvedRubricId,
         normalizedStart.dbValue,
         normalizedEnd.dbValue,
         location,
         venue || null,
         modality || 'Online',
-        coordinatorId,
-        normalizedStart.dbValue,
         coordinatorId,
       ]
     );
@@ -1214,7 +1823,9 @@ module.exports = {
   getAdvisersInInstitution,
   addAdviserToInstitution,
   removeAdviserFromInstitution,
+  removeAdviserFromCourse,
   getCoursesByInstitution,
+  getCoursesWithAdvisersByInstitution,
   getCourseById,
   createCourse,
   updateCourse,
@@ -1228,6 +1839,11 @@ module.exports = {
   getCoordinatorStats,
   createDefenseForCourse,
   createCoordinatorDefenseBooking,
+  listRubrics,
+  getCoordinatorRubricById,
+  createCoordinatorRubric,
+  updateCoordinatorRubric,
+  deleteCoordinatorRubric,
   getProjectsByInstitution,
   getProjectsByAdviserInInstitution,
 };
