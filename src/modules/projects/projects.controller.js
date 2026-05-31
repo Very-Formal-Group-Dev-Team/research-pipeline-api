@@ -2,6 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const mammoth = require('mammoth');
 const projectsService = require('./projects.service');
+const defensesService = require('../defenses/defenses.service');
 const { getRoleByUserId } = require('../users/users.service');
 const { uploadBase } = require('../../../config/env');
 
@@ -404,6 +405,27 @@ async function scheduleDefense(req, res) {
   }
 }
 
+async function getMeetings(req, res) {
+  try {
+    const projectId = req.params.id;
+    const project = await projectsService.getProjectById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const canView = await defensesService.userHasProjectMeetingAccess(req.user.id, projectId);
+    if (!canView) {
+      return res.status(403).json({ error: 'You are not allowed to view meetings for this project' });
+    }
+
+    const meetings = await defensesService.getMeetingsForProject(projectId);
+    return res.json(meetings);
+  } catch (err) {
+    console.error('projects.controller – getMeetings error:', err);
+    return res.status(500).json({ error: 'Failed to fetch project meetings' });
+  }
+}
+
 async function updateStatus(req, res) {
   try {
     const { status } = req.body;
@@ -638,6 +660,7 @@ module.exports = {
   getOne,
   getByCode,
   getMembers,
+  getMeetings,
   getFiles,
   join,
   invite,

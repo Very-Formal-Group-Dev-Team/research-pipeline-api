@@ -1,4 +1,13 @@
-const { createDefense, getDefensesByUser, getDefensesForMember, getProjectDefenseSchedules, cancelDefense, rescheduleDefense } = require('./defenses.service');
+const {
+  createDefense,
+  getDefensesByUser,
+  getDefensesForMember,
+  getMeetingsForProject,
+  userHasProjectMeetingAccess,
+  getProjectDefenseSchedules,
+  cancelDefense,
+  rescheduleDefense,
+} = require('./defenses.service');
 
 async function postDefense(req, res) {
   const body = req.body || {};
@@ -79,4 +88,28 @@ async function getMyProjectDefenses(req, res) {
   return res.json(defenses);
 }
 
-module.exports = { postDefense, postDefenseProposal, getMyDefenses, getMyProjectDefenses, patchCancelDefense, patchRescheduleDefense };
+async function getProjectMeetings(req, res) {
+  try {
+    const projectId = req.params.projectId;
+    const canView = await userHasProjectMeetingAccess(req.user.id, projectId);
+    if (!canView) {
+      return res.status(403).json({ error: 'You are not allowed to view meetings for this project' });
+    }
+
+    const meetings = await getMeetingsForProject(projectId);
+    return res.json(meetings);
+  } catch (err) {
+    console.error('defenses.controller – getProjectMeetings error:', err);
+    return res.status(500).json({ error: 'Failed to fetch project meetings' });
+  }
+}
+
+module.exports = {
+  postDefense,
+  postDefenseProposal,
+  getMyDefenses,
+  getMyProjectDefenses,
+  getProjectMeetings,
+  patchCancelDefense,
+  patchRescheduleDefense,
+};

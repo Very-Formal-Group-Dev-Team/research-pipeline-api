@@ -1,5 +1,11 @@
 const db = require('../../../config/db');
 const { createNotification } = require('../notifications/notifications.service');
+const {
+  JITSI_MEETING_PREFIX,
+  createJitsiMeetingFields,
+  appendMeetingLinkToMessage,
+  normalizeMeetingUrl,
+} = require('../../lib/jitsi');
 
 const ADVISER_BOOKING_TABLE = 'meetings';
 
@@ -620,11 +626,34 @@ async function createDefense(userId, payload) {
 
     const [idRows] = await conn.execute('SELECT UUID() AS id');
     const defenseId = idRows[0].id;
+    const resolvedModality = modality || 'Online';
+    const jitsi = createJitsiMeetingFields({
+      prefix: JITSI_MEETING_PREFIX,
+      recordId: defenseId,
+      modality: resolvedModality,
+    });
 
     await conn.execute(
-      `INSERT INTO ${ADVISER_BOOKING_TABLE} (id, project_id, adviser_id, defense_type, scheduled_at, end_time, location, modality, status, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [defenseId, project_id, userId, defense_type, normalizedSchedule.dbValue, normalizedEnd.dbValue, location, modality || 'Online', status, userId]
+      `INSERT INTO ${ADVISER_BOOKING_TABLE} (
+         id, project_id, adviser_id, defense_type, scheduled_at, end_time, location, modality, status, created_by,
+         meeting_room, meeting_url, meeting_provider
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        defenseId,
+        project_id,
+        userId,
+        defense_type,
+        normalizedSchedule.dbValue,
+        normalizedEnd.dbValue,
+        location,
+        resolvedModality,
+        status,
+        userId,
+        jitsi.meeting_room,
+        jitsi.meeting_url,
+        jitsi.meeting_provider,
+      ]
     );
 
     const [rows] = await conn.execute(
@@ -636,9 +665,12 @@ async function createDefense(userId, payload) {
     const eventTitle = status === 'pending'
       ? 'Defense request queued'
       : 'Defense booking created';
-    const eventMessage = status === 'pending'
-      ? `A ${defense_type} defense request for "${project.title}" was queued for ${scheduledLabel}${location ? ` at ${location}` : ''}.`
-      : `A ${defense_type} defense for "${project.title}" was booked on ${scheduledLabel}${location ? ` at ${location}` : ''}.`;
+    const eventMessage = appendMeetingLinkToMessage(
+      status === 'pending'
+        ? `A ${defense_type} defense request for "${project.title}" was queued for ${scheduledLabel}${location ? ` at ${location}` : ''}.`
+        : `A ${defense_type} defense for "${project.title}" was booked on ${scheduledLabel}${location ? ` at ${location}` : ''}.`,
+      jitsi.meeting_url
+    );
 
     await notifyProjectMembers({
       projectId: project_id,
@@ -652,6 +684,8 @@ async function createDefense(userId, payload) {
         endTime: normalizedEnd.dbValue,
         location,
         status,
+        meetingUrl: jitsi.meeting_url,
+        meetingRoom: jitsi.meeting_room,
       },
       excludeUserId: userId,
       conn,
@@ -660,9 +694,12 @@ async function createDefense(userId, payload) {
     await notifyInstitutionCoordinators({
       institutionId: project.institution_id,
       title: status === 'pending' ? 'Defense request awaiting review' : 'Defense booking submitted',
-      message: status === 'pending'
-        ? `A ${defense_type} defense request for "${project.title}" is queued and awaiting available slot.`
-        : `A ${defense_type} defense for "${project.title}" was submitted for ${scheduledLabel}${location ? ` at ${location}` : ''}.`,
+      message: appendMeetingLinkToMessage(
+        status === 'pending'
+          ? `A ${defense_type} defense request for "${project.title}" is queued and awaiting available slot.`
+          : `A ${defense_type} defense for "${project.title}" was submitted for ${scheduledLabel}${location ? ` at ${location}` : ''}.`,
+        jitsi.meeting_url
+      ),
       metadata: {
         defenseId,
         projectId: project_id,
@@ -672,6 +709,8 @@ async function createDefense(userId, payload) {
         endTime: normalizedEnd.dbValue,
         location,
         status,
+        meetingUrl: jitsi.meeting_url,
+        meetingRoom: jitsi.meeting_room,
       },
       excludeUserId: userId,
       conn,
@@ -735,6 +774,129 @@ async function getDefensesForMember(userId) {
   return rows;
 }
 
+function mapScheduleRow(row) {
+  const startTime = row.start_time || row.scheduled_at || null;
+  return {
+    ...row,
+    start_time: startTime,
+    end_time: row.end_time || startTime,
+    venue: row.venue || row.location || null,
+    meeting_url: normalizeMeetingUrl(row.meeting_url),
+  };
+}
+
+async function getMeetingsForProject(projectId) {
+  const normalizedProjectId = String(projectId || '').trim();
+  if (!normalizedProjectId) return [];
+
+  const statusLabel = (alias) => `CASE
+      WHEN ${alias}.status = 'scheduled' THEN 'Scheduled'
+      WHEN ${alias}.status = 'pending' THEN 'Pending'
+      WHEN ${alias}.status = 'cancelled' THEN 'Cancelled'
+      WHEN ${alias}.status = 'rescheduled' THEN 'Rescheduled'
+      WHEN ${alias}.status = 'completed' THEN 'Completed'
+      ELSE ${alias}.status
+    END AS status_label`;
+
+  const meetingSelect = `
+    SELECT m.id,
+           m.project_id,
+           p.title AS project_title,
+           p.project_code,
+           m.defense_type,
+           m.scheduled_at AS start_time,
+           COALESCE(m.end_time, m.scheduled_at) AS end_time,
+           m.location,
+           m.location AS venue,
+           m.modality,
+           m.status,
+           m.created_by,
+           m.meeting_room,
+           m.meeting_url,
+           m.meeting_provider,
+           'meeting' AS schedule_source,
+           ${statusLabel('m')},
+           u.full_name AS created_by_name,
+           m.created_at
+    FROM ${ADVISER_BOOKING_TABLE} m
+    INNER JOIN projects p ON m.project_id = p.id
+    LEFT JOIN users u ON m.created_by = u.id
+    WHERE m.project_id = ?`;
+
+  const legacyDefenseSelect = `
+    SELECT d.id,
+           d.project_id,
+           p.title AS project_title,
+           p.project_code,
+           d.defense_type,
+           d.scheduled_at AS start_time,
+           COALESCE(d.end_time, d.scheduled_at) AS end_time,
+           d.location,
+           d.location AS venue,
+           d.modality,
+           d.status,
+           d.created_by,
+           d.meeting_room,
+           d.meeting_url,
+           d.meeting_provider,
+           'meeting' AS schedule_source,
+           ${statusLabel('d')},
+           u.full_name AS created_by_name,
+           d.created_at
+    FROM defenses d
+    INNER JOIN projects p ON d.project_id = p.id
+    LEFT JOIN users u ON d.created_by = u.id
+    WHERE d.project_id = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM ${ADVISER_BOOKING_TABLE} m2 WHERE m2.id = d.id
+      )`;
+
+  try {
+    const { rows } = await db.query(
+      `${meetingSelect}
+       UNION ALL
+       ${legacyDefenseSelect}
+       ORDER BY start_time ASC, created_at ASC`,
+      [normalizedProjectId, normalizedProjectId]
+    );
+    return rows.map(mapScheduleRow);
+  } catch (err) {
+    console.warn('getMeetingsForProject union query failed, falling back to meetings only:', err.message);
+    const { rows } = await db.query(
+      `${meetingSelect} ORDER BY start_time ASC, created_at ASC`,
+      [normalizedProjectId]
+    );
+    return rows.map(mapScheduleRow);
+  }
+}
+
+async function userHasProjectMeetingAccess(userId, projectId) {
+  const normalizedProjectId = String(projectId || '').trim();
+  if (!normalizedProjectId || !userId) return false;
+
+  const { rows: memberRows } = await db.query(
+    'SELECT id FROM project_members WHERE project_id = ? AND user_id = ? LIMIT 1',
+    [normalizedProjectId, userId]
+  );
+  if (memberRows.length) return true;
+
+  const { rows: adviserRows } = await db.query(
+    `SELECT id FROM project_members
+     WHERE project_id = ? AND user_id = ? AND role = 'adviser' AND status = 'accepted'
+     LIMIT 1`,
+    [normalizedProjectId, userId]
+  );
+  if (adviserRows.length) return true;
+
+  const { rows: createdRows } = await db.query(
+    `SELECT id FROM ${ADVISER_BOOKING_TABLE}
+     WHERE project_id = ? AND created_by = ?
+     LIMIT 1`,
+    [normalizedProjectId, userId]
+  );
+  return createdRows.length > 0;
+}
+
 async function getProjectDefenseSchedules(userId) {
   const { rows } = await db.query(
     `SELECT d.id,
@@ -746,11 +908,17 @@ async function getProjectDefenseSchedules(userId) {
             COALESCE(d.end_time, d.scheduled_at) AS end_time,
             d.location,
             d.venue,
+            d.modality,
             d.status,
-          d.created_by,
+            d.created_by,
+            d.meeting_room,
+            d.meeting_url,
+            d.meeting_provider,
+            'defense' AS schedule_source,
             CASE
               WHEN d.status = 'scheduled' THEN 'Scheduled'
               WHEN d.status = 'pending' THEN 'Pending'
+              WHEN d.status = 'approved' THEN 'Approved'
               WHEN d.status = 'cancelled' THEN 'Cancelled'
               WHEN d.status = 'rescheduled' THEN 'Rescheduled'
               WHEN d.status = 'completed' THEN 'Completed'
@@ -770,10 +938,53 @@ async function getProjectDefenseSchedules(userId) {
             d.created_at
      FROM defenses d
      INNER JOIN projects p ON d.project_id = p.id
-     INNER JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
+     INNER JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ? AND pm.status = 'accepted'
      LEFT JOIN users u ON d.created_by = u.id
-     ORDER BY d.scheduled_at DESC, d.created_at DESC`,
-    [userId]
+     WHERE d.status NOT IN ('cancelled', 'rejected')
+     UNION ALL
+     SELECT m.id,
+            m.project_id,
+            p.title AS project_title,
+            p.project_code,
+            m.defense_type,
+            m.scheduled_at AS start_time,
+            COALESCE(m.end_time, m.scheduled_at) AS end_time,
+            m.location,
+            m.venue,
+            m.modality,
+            m.status,
+            m.created_by,
+            m.meeting_room,
+            m.meeting_url,
+            m.meeting_provider,
+            'meeting' AS schedule_source,
+            CASE
+              WHEN m.status = 'scheduled' THEN 'Scheduled'
+              WHEN m.status = 'pending' THEN 'Pending'
+              WHEN m.status = 'cancelled' THEN 'Cancelled'
+              WHEN m.status = 'rescheduled' THEN 'Rescheduled'
+              WHEN m.status = 'completed' THEN 'Completed'
+              ELSE m.status
+            END AS status_label,
+            u.full_name AS created_by_name,
+            (
+              SELECT u2.full_name
+              FROM project_members pm2
+              INNER JOIN users u2 ON u2.id = pm2.user_id
+              WHERE pm2.project_id = m.project_id
+                AND pm2.role = 'adviser'
+                AND pm2.status = 'accepted'
+              ORDER BY pm2.invited_at ASC
+              LIMIT 1
+            ) AS adviser_name,
+            m.created_at
+     FROM meetings m
+     INNER JOIN projects p ON m.project_id = p.id
+     INNER JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ? AND pm.status = 'accepted'
+     LEFT JOIN users u ON m.created_by = u.id
+     WHERE m.status NOT IN ('cancelled', 'rejected')
+     ORDER BY start_time DESC, created_at DESC`,
+    [userId, userId]
   );
   return rows;
 }
@@ -952,7 +1163,10 @@ async function rescheduleDefense(userId, defenseId, payload) {
     await notifyProjectMembers({
       projectId: defense.project_id,
       title: 'Defense booking rescheduled',
-      message: `A ${defense.defense_type} defense for "${defense.project_title || 'your project'}" was moved to ${formatScheduleLabel(normalizedSchedule.dateValue)}${defense.location ? ` at ${defense.location}` : ''}.`,
+      message: appendMeetingLinkToMessage(
+        `A ${defense.defense_type} defense for "${defense.project_title || 'your project'}" was moved to ${formatScheduleLabel(normalizedSchedule.dateValue)}${defense.location ? ` at ${defense.location}` : ''}.`,
+        defense.meeting_url
+      ),
       metadata: {
         defenseId,
         projectId: defense.project_id,
@@ -963,6 +1177,8 @@ async function rescheduleDefense(userId, defenseId, payload) {
         endTime: normalizedEnd.dbValue,
         location: defense.location || null,
         status: 'rescheduled',
+        meetingUrl: defense.meeting_url,
+        meetingRoom: defense.meeting_room,
       },
       excludeUserId: userId,
       conn,
@@ -1099,4 +1315,15 @@ async function processAllPendingDefenses() {
   }
 }
 
-module.exports = { createDefense, getDefensesByUser, getDefensesForMember, getProjectDefenseSchedules, cancelDefense, rescheduleDefense, validateScheduleConstraints, getScheduleWindow };
+module.exports = {
+  createDefense,
+  getDefensesByUser,
+  getDefensesForMember,
+  getMeetingsForProject,
+  userHasProjectMeetingAccess,
+  getProjectDefenseSchedules,
+  cancelDefense,
+  rescheduleDefense,
+  validateScheduleConstraints,
+  getScheduleWindow,
+};
