@@ -177,15 +177,15 @@ async function joinProject(projectId, userId, memberRole) {
   );
 }
 
-async function inviteToProject(projectId, userId, role, invitedByUserId) {
+async function inviteToProject(projectId, userId, role, invitedByUserId, contributorRole = null) {
   const conn = await db.pool.getConnection();
   try {
     await conn.beginTransaction();
 
     await conn.execute(
-      `INSERT INTO project_members (project_id, user_id, role, status)
-       VALUES (?, ?, ?, 'pending')`,
-      [projectId, userId, role]
+      `INSERT INTO project_members (project_id, user_id, role, contributor_role, status)
+       VALUES (?, ?, ?, ?, 'pending')`,
+      [projectId, userId, role, contributorRole || null]
     );
 
     const [projectRows] = await conn.execute(
@@ -207,15 +207,17 @@ async function inviteToProject(projectId, userId, role, invitedByUserId) {
 
     const project = projectRows[0];
     const inviterName = project.invited_by_name || project.created_by_name || 'a user';
+    const roleLabel = contributorRole || role;
 
     await notificationsService.createNotification({
       userId,
       type: 'invitation',
       title: 'Project invitation',
-      message: `You were invited by ${inviterName} to join "${project.title}" as ${role}.`,
+      message: `You were invited by ${inviterName} to join "${project.title}" as ${roleLabel}.`,
       metadata: {
         projectId,
         role,
+        contributorRole: contributorRole || null,
         invitedByUserId: invitedByUserId || project.created_by,
       },
       conn,
@@ -232,7 +234,7 @@ async function inviteToProject(projectId, userId, role, invitedByUserId) {
 
 async function getPendingInvitationsForUser(userId) {
   const { rows } = await db.query(
-    `SELECT pm.id, pm.project_id, pm.role, pm.status, pm.invited_at,
+    `SELECT pm.id, pm.project_id, pm.role, pm.contributor_role, pm.status, pm.invited_at,
             p.title AS project_title, p.project_code,
             creator.full_name AS invited_by_name, creator.email AS invited_by_email
      FROM project_members pm
