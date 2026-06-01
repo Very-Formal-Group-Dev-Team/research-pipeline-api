@@ -1,16 +1,36 @@
 const nodemailer = require('nodemailer');
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT || '587', 10),
-  secure: false,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
+function getSmtpConfig() {
+  const host = (process.env.SMTP_HOST || 'smtp.gmail.com').trim();
+  const port = Number.parseInt(process.env.SMTP_PORT || '587', 10);
+  const secure = String(process.env.SMTP_SECURE || '').trim().toLowerCase() === 'true' || port === 465;
+  const user = (process.env.SMTP_USER || '').trim();
+  const pass = (process.env.SMTP_PASS || '').trim();
+  const from = (process.env.EMAIL_FROM || '').trim() || (user ? `"Student Research" <${user}>` : '');
+
+  if (!host) {
+    const error = new Error('SMTP_HOST is missing. Configure SMTP_HOST before sending verification emails.');
+    error.code = 'SMTP_CONFIG_MISSING';
+    throw error;
+  }
+
+  if (!user || !pass) {
+    const error = new Error('SMTP credentials are missing. Set SMTP_USER and SMTP_PASS to send verification emails.');
+    error.code = 'SMTP_CONFIG_MISSING';
+    throw error;
+  }
+
+  if (!from) {
+    const error = new Error('EMAIL_FROM is missing. Set EMAIL_FROM or SMTP_USER to send verification emails.');
+    error.code = 'SMTP_CONFIG_MISSING';
+    throw error;
+  }
+
+  return { host, port, secure, user, pass, from };
+}
 
 async function sendVerificationEmail(to, token) {
+  const smtp = getSmtpConfig();
   const webOrigin = process.env.WEB_ORIGIN || 'http://localhost:3000';
   const verifyUrl = `${webOrigin}/auth/verify?token=${encodeURIComponent(token)}`;
 
@@ -44,8 +64,18 @@ async function sendVerificationEmail(to, token) {
 
   const text = `Verify your email for Student Research Portal\n\nClick the link below to verify your email:\n${verifyUrl}\n\nThis link expires in 24 hours.`;
 
+  const transporter = nodemailer.createTransport({
+    host: smtp.host,
+    port: smtp.port,
+    secure: smtp.secure,
+    auth: {
+      user: smtp.user,
+      pass: smtp.pass,
+    },
+  });
+
   await transporter.sendMail({
-    from: `"Student Research" <${process.env.SMTP_USER}>`,
+    from: smtp.from,
     to,
     subject: 'Verify your email — Student Research Portal',
     text,

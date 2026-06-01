@@ -7,6 +7,14 @@ const { sendVerificationEmail } = require('./email.service');
 const SALT_ROUNDS = 12;
 const VERIFICATION_EXPIRY_HOURS = 24;
 
+function getVerificationEmailErrorMessage(err) {
+  if (err && err.code === 'SMTP_CONFIG_MISSING') {
+    return err.message;
+  }
+
+  return 'Failed to send verification email. Please try again later.';
+}
+
 function generateToken(user) {
   return jwt.sign(
     { sub: user.id, email: user.email },
@@ -38,6 +46,7 @@ async function registerWithEmail(email, password, fullName) {
         await sendVerificationEmail(email, token);
       } catch (err) {
         console.error('[auth] failed to resend verification email', err.message);
+        return { error: getVerificationEmailErrorMessage(err) };
       }
       return { pending: true, message: 'Verification email resent. Please check your inbox.' };
     }
@@ -61,7 +70,7 @@ async function registerWithEmail(email, password, fullName) {
     await sendVerificationEmail(email, token);
   } catch (err) {
     console.error('[auth] failed to send verification email', err.message);
-    return { error: 'Registration succeeded but failed to send verification email. Please try again.' };
+    return { error: getVerificationEmailErrorMessage(err) };
   }
 
   return { pending: true, message: 'Please check your email to verify your account.' };
@@ -127,7 +136,7 @@ async function resendVerification(email) {
     await sendVerificationEmail(email, token);
   } catch (err) {
     console.error('[auth] failed to resend verification email', err.message);
-    return { error: 'Failed to send verification email. Please try again later.' };
+    return { error: getVerificationEmailErrorMessage(err) };
   }
 
   return { success: true, message: 'Verification email sent.' };
