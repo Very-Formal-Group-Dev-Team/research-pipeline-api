@@ -1,3 +1,6 @@
 .env
 node_modules/
 uploads/
+docker/jitsi/.env
+docker/jitsi/cfg/
+docker/jitsi/docker/

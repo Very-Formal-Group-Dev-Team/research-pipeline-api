@@ -2,6 +2,11 @@ const crypto = require('crypto');
 const db = require('../../../config/db');
 const { createNotification } = require('../notifications/notifications.service');
 const { validateScheduleConstraints, getScheduleWindow } = require('../defenses/defenses.service');
+const {
+  JITSI_DEFENSE_PREFIX,
+  createJitsiMeetingFields,
+  appendMeetingLinkToMessage,
+} = require('../../lib/jitsi');
 
 let defenseScheduleExprCache = null;
 
@@ -872,6 +877,12 @@ async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule
       notifType = scheduleMoved ? 'defense_moved' : 'defense_approved';
     }
 
+    const jitsi = createJitsiMeetingFields({
+      prefix: JITSI_DEFENSE_PREFIX,
+      recordId: defenseId,
+      modality: defense.modality || 'Online',
+    });
+
     // Update defense schedule and status without requiring verification columns.
     await conn.execute(
       `UPDATE defenses
@@ -879,9 +890,22 @@ async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule
            scheduled_at = ?,
            end_time = ?,
            verified_schedule = ?,
-           status = ?
+           status = ?,
+           meeting_room = ?,
+           meeting_url = ?,
+           meeting_provider = ?
        WHERE id = ?`,
-      [venue || null, proposedStart, proposedEnd, proposedStart, newStatus, defenseId]
+      [
+        venue || null,
+        proposedStart,
+        proposedEnd,
+        proposedStart,
+        newStatus,
+        jitsi.meeting_room,
+        jitsi.meeting_url,
+        jitsi.meeting_provider,
+        defenseId,
+      ]
     );
 
     // Create verification audit record
@@ -918,13 +942,22 @@ async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule
       notifMessage = `The ${defense.defense_type} defense for "${defense.project_title}" has been confirmed for ${dateStr} at ${timeStr} (${modality}).`;
     }
 
+    const notifMessageWithLink = appendMeetingLinkToMessage(notifMessage, jitsi.meeting_url);
+
     for (const member of members) {
       await createNotification({
         userId: member.user_id,
         type: notifType,
         title: notifTitle,
-        message: notifMessage,
-        metadata: { defenseId, projectId: defense.project_id, schedule: finalSchedule, modality },
+        message: notifMessageWithLink,
+        metadata: {
+          defenseId,
+          projectId: defense.project_id,
+          schedule: finalSchedule,
+          modality,
+          meetingUrl: jitsi.meeting_url,
+          meetingRoom: jitsi.meeting_room,
+        },
         conn,
       });
     }
@@ -1063,7 +1096,20 @@ async function getCoordinatorStats(institutionId) {
 }
 
 async function createDefenseForCourse(institutionId, coordinatorId, payload) {
-  const { courseId, defenseType, scheduledAt, date, startTime, endTime, location, venue, forceSchedule, holdDefense } = payload;
+  const {
+    courseId,
+    defenseType,
+    scheduledAt,
+    date,
+    startTime,
+    endTime,
+    location,
+    venue,
+    modality,
+    forceSchedule,
+    holdDefense,
+  } = payload;
+  const resolvedModality = modality || 'Online';
 
   if (!courseId) return { error: 'courseId is required' };
   if (!defenseType || !['proposal', 'midterm', 'final'].includes(defenseType)) {
@@ -1188,11 +1234,33 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
     for (const row of projectAdviserRows) {
       const [idRows] = await conn.execute('SELECT UUID() AS id');
       const defenseId = idRows[0].id;
+      const jitsi = createJitsiMeetingFields({
+        prefix: JITSI_DEFENSE_PREFIX,
+        recordId: defenseId,
+        modality: resolvedModality,
+      });
 
       await conn.execute(
-        `INSERT INTO defenses (id, project_id, defense_type, scheduled_at, end_time, location, venue, status, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [defenseId, row.id, defenseType, normalizedStart.dbValue, normalizedEnd.dbValue, location, venue || null, insertStatus, coordinatorId]
+        `INSERT INTO defenses (
+           id, project_id, defense_type, scheduled_at, end_time, location, venue, modality, status, created_by,
+           meeting_room, meeting_url, meeting_provider
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          defenseId,
+          row.id,
+          defenseType,
+          normalizedStart.dbValue,
+          normalizedEnd.dbValue,
+          location,
+          venue || null,
+          resolvedModality,
+          insertStatus,
+          coordinatorId,
+          jitsi.meeting_room,
+          jitsi.meeting_url,
+          jitsi.meeting_provider,
+        ]
       );
 
       const [defenseRows] = await conn.execute(
@@ -1215,9 +1283,12 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
       const notifTitle = holdDefense
         ? `${defenseType.charAt(0).toUpperCase() + defenseType.slice(1)} Defense Queued`
         : `${defenseType.charAt(0).toUpperCase() + defenseType.slice(1)} Defense Scheduled`;
-      const notifMessage = holdDefense
-        ? `A ${defenseType} defense for "${row.title}" has been queued and will be scheduled when the slot opens.`
-        : `A ${defenseType} defense for "${row.title}" has been scheduled on ${normalizedStart.dateValue.toLocaleDateString()} at ${normalizedStart.dateValue.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`;
+      const notifMessage = appendMeetingLinkToMessage(
+        holdDefense
+          ? `A ${defenseType} defense for "${row.title}" has been queued and will be scheduled when the slot opens.`
+          : `A ${defenseType} defense for "${row.title}" has been scheduled on ${normalizedStart.dateValue.toLocaleDateString()} at ${normalizedStart.dateValue.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`,
+        jitsi.meeting_url
+      );
 
       for (const member of members) {
         await createNotification({
@@ -1225,7 +1296,12 @@ async function createDefenseForCourse(institutionId, coordinatorId, payload) {
           type: 'schedule',
           title: notifTitle,
           message: notifMessage,
-          metadata: { projectId: row.id },
+          metadata: {
+            defenseId,
+            projectId: row.id,
+            meetingUrl: jitsi.meeting_url,
+            meetingRoom: jitsi.meeting_room,
+          },
           conn,
         });
       }
@@ -1556,13 +1632,19 @@ async function createCoordinatorDefenseBookingForCourse(institutionId, coordinat
 
       const [idRows] = await conn.execute('SELECT UUID() AS id');
       const defenseId = idRows[0].id;
+      const resolvedModalityForInsert = modality || 'Online';
+      const jitsi = createJitsiMeetingFields({
+        prefix: JITSI_DEFENSE_PREFIX,
+        recordId: defenseId,
+        modality: resolvedModalityForInsert,
+      });
 
       await conn.execute(
         `INSERT INTO defenses (
           id, project_id, defense_type, rubric_id, scheduled_at, end_time, location, venue, modality,
-          status, created_by
+          status, created_by, meeting_room, meeting_url, meeting_provider
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?)`,
         [
           defenseId,
           project.id,
@@ -1572,8 +1654,11 @@ async function createCoordinatorDefenseBookingForCourse(institutionId, coordinat
           normalizedEnd.dbValue,
           location,
           venue || null,
-          modality || 'Online',
+          resolvedModalityForInsert,
           coordinatorId,
+          jitsi.meeting_room,
+          jitsi.meeting_url,
+          jitsi.meeting_provider,
         ]
       );
 
@@ -1585,8 +1670,17 @@ async function createCoordinatorDefenseBookingForCourse(institutionId, coordinat
           userId: member.user_id,
           type: 'schedule',
           title: `${resolvedDefenseType.charAt(0).toUpperCase() + resolvedDefenseType.slice(1)} Defense Scheduled`,
-          message: `The ${resolvedDefenseType} defense for "${project.title}" has been scheduled.`,
-          metadata: { defenseId, projectId: project.id, courseId: resolvedCourseId },
+          message: appendMeetingLinkToMessage(
+            `The ${resolvedDefenseType} defense for "${project.title}" has been scheduled.`,
+            jitsi.meeting_url
+          ),
+          metadata: {
+            defenseId,
+            projectId: project.id,
+            courseId: resolvedCourseId,
+            meetingUrl: jitsi.meeting_url,
+            meetingRoom: jitsi.meeting_room,
+          },
           conn,
         });
       }
@@ -1704,13 +1798,19 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
 
     const [idRows] = await conn.execute('SELECT UUID() AS id');
     const defenseId = idRows[0].id;
+    const resolvedModalityForInsert = modality || 'Online';
+    const jitsi = createJitsiMeetingFields({
+      prefix: JITSI_DEFENSE_PREFIX,
+      recordId: defenseId,
+      modality: resolvedModalityForInsert,
+    });
 
     await conn.execute(
       `INSERT INTO defenses (
         id, project_id, defense_type, rubric_id, scheduled_at, end_time, location, venue, modality,
-        status, created_by
+        status, created_by, meeting_room, meeting_url, meeting_provider
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?)`,
       [
         defenseId,
         resolvedProjectId,
@@ -1720,15 +1820,21 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
         normalizedEnd.dbValue,
         location,
         venue || null,
-        modality || 'Online',
+        resolvedModalityForInsert,
         coordinatorId,
+        jitsi.meeting_room,
+        jitsi.meeting_url,
+        jitsi.meeting_provider,
       ]
     );
 
     const dateStr = normalizedStart.dateValue.toLocaleDateString();
     const timeStr = normalizedStart.dateValue.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const notifTitle = `${resolvedDefenseType.charAt(0).toUpperCase() + resolvedDefenseType.slice(1)} Defense Scheduled`;
-    const notifMessage = `The ${resolvedDefenseType} defense for "${project.title}" has been scheduled on ${dateStr} at ${timeStr}.`;
+    const notifMessage = appendMeetingLinkToMessage(
+      `The ${resolvedDefenseType} defense for "${project.title}" has been scheduled on ${dateStr} at ${timeStr}.`,
+      jitsi.meeting_url
+    );
 
     for (const member of memberRows) {
       await createNotification({
@@ -1736,7 +1842,13 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
         type: 'schedule',
         title: notifTitle,
         message: notifMessage,
-        metadata: { defenseId, projectId: resolvedProjectId, schedule: normalizedStart.dbValue },
+        metadata: {
+          defenseId,
+          projectId: resolvedProjectId,
+          schedule: normalizedStart.dbValue,
+          meetingUrl: jitsi.meeting_url,
+          meetingRoom: jitsi.meeting_room,
+        },
         conn,
       });
     }

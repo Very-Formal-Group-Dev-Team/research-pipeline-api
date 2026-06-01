@@ -84,11 +84,14 @@ function validateProductionEnv() {
   }
 }
 
+const jitsiBaseUrl = (process.env.JITSI_BASE_URL || 'https://localhost:8443').trim().replace(/\/+$/, '');
+
 module.exports = {
   isProduction,
   normalizeOrigin,
   corsOrigins,
   uploadBase,
   trustProxy,
+  jitsiBaseUrl,
   validateProductionEnv,
 };

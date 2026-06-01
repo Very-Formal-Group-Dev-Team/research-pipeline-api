@@ -1,0 +1,106 @@
+# Jitsi Meet stack for the student-research Compose project.
+# Included from the repo root docker-compose.yml.
+# UI: http://localhost:8000
+
+services:
+  jitsi-web:
+    image: jitsi/web:${JITSI_IMAGE_VERSION:-stable}
+    container_name: student-research-jitsi-web
+    restart: unless-stopped
+    ports:
+      - '${HTTP_PORT:-8000}:80'
+      - '${HTTPS_PORT:-8443}:443'
+    volumes:
+      - ${CONFIG}/web:/config:Z
+      - ${CONFIG}/web/crontabs:/var/spool/cron/crontabs:Z
+      - ${CONFIG}/transcripts:/usr/share/jitsi-meet/transcripts:Z
+    env_file:
+      - .env
+    environment:
+      - DISABLE_HTTPS
+      - ENABLE_AUTH
+      - ENABLE_GUESTS
+      - ENABLE_HTTP_REDIRECT
+      - ENABLE_LETSENCRYPT
+      - ENABLE_XMPP_WEBSOCKET
+      - PUBLIC_URL
+      - TZ
+    networks:
+      - meet.jitsi
+    depends_on:
+      - jitsi-jicofo
+      - jitsi-jvb
+
+  jitsi-prosody:
+    image: jitsi/prosody:${JITSI_IMAGE_VERSION:-stable}
+    container_name: student-research-jitsi-prosody
+    restart: unless-stopped
+    expose:
+      - '5222'
+      - '5269'
+      - '5347'
+      - '5280'
+    volumes:
+      - ${CONFIG}/prosody/config:/config:Z
+      - ${CONFIG}/prosody/prosody-plugins-custom:/prosody-plugins-custom:Z
+    env_file:
+      - .env
+    environment:
+      - AUTH_TYPE
+      - ENABLE_AUTH
+      - ENABLE_GUESTS
+      - JICOFO_AUTH_PASSWORD
+      - JVB_AUTH_PASSWORD
+      - JIGASI_XMPP_PASSWORD
+      - JIGASI_TRANSCRIBER_PASSWORD
+      - JIBRI_RECORDER_PASSWORD
+      - JIBRI_XMPP_PASSWORD
+      - PUBLIC_URL
+      - TZ
+    networks:
+      meet.jitsi:
+        aliases:
+          - xmpp.meet.jitsi
+
+  jitsi-jicofo:
+    image: jitsi/jicofo:${JITSI_IMAGE_VERSION:-stable}
+    container_name: student-research-jitsi-jicofo
+    restart: unless-stopped
+    volumes:
+      - ${CONFIG}/jicofo:/config:Z
+    env_file:
+      - .env
+    environment:
+      - ENABLE_AUTH
+      - JICOFO_AUTH_PASSWORD
+      - TZ
+    depends_on:
+      - jitsi-prosody
+    networks:
+      - meet.jitsi
+
+  jitsi-jvb:
+    image: jitsi/jvb:${JITSI_IMAGE_VERSION:-stable}
+    container_name: student-research-jitsi-jvb
+    restart: unless-stopped
+    ports:
+      - '${JVB_PORT:-10000}:${JVB_PORT:-10000}/udp'
+    volumes:
+      - ${CONFIG}/jvb:/config:Z
+    env_file:
+      - .env
+    environment:
+      - ENABLE_COLIBRI_WEBSOCKET
+      - JVB_ADVERTISE_IPS
+      - JVB_AUTH_PASSWORD
+      - JVB_PORT
+      - PUBLIC_URL
+      - TZ
+    depends_on:
+      - jitsi-prosody
+    networks:
+      - meet.jitsi
+
+networks:
+  meet.jitsi:
+    driver: bridge
