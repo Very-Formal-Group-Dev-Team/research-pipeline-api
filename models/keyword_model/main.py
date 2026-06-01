@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 import string
+import zipfile
 from typing import Any
 
 import joblib
@@ -29,8 +30,13 @@ def _ensure_nltk_resources() -> None:
     for resource_path, name in resources:
         try:
             nltk.data.find(resource_path)
-        except LookupError:
+        except (LookupError, zipfile.BadZipFile, OSError):
+            for data_path in nltk.data.path:
+                archive = Path(data_path) / f"{resource_path}.zip"
+                if archive.is_file():
+                    archive.unlink()
             nltk.download(name, quiet=True)
+            nltk.data.find(resource_path)
 
 
 _ensure_nltk_resources()
