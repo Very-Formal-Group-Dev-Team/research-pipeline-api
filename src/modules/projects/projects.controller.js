@@ -153,9 +153,51 @@ async function create(req, res) {
       await projectsService.updateProjectDocumentRef(project.id, publicUrl);
     }
 
+    let invites = [];
+    if (req.body.invites) {
+      try {
+        invites = typeof req.body.invites === 'string' ? JSON.parse(req.body.invites) : req.body.invites;
+        if (!Array.isArray(invites)) invites = [];
+      } catch {
+        invites = [];
+      }
+    }
+
+    const inviteErrors = [];
+    for (const inv of invites) {
+      const userId = inv?.userId;
+      if (!userId || typeof userId !== 'string' || userId === req.user.id) continue;
+
+      const memberRole = inv.role === 'adviser' ? 'adviser' : 'member';
+      const contributorRole =
+        typeof inv.contributorRole === 'string' && inv.contributorRole.trim()
+          ? inv.contributorRole.trim()
+          : null;
+
+      try {
+        const alreadyMember = await projectsService.isProjectMember(project.id, userId);
+        if (alreadyMember) continue;
+
+        await projectsService.inviteToProject(
+          project.id,
+          userId,
+          memberRole,
+          req.user.id,
+          contributorRole,
+        );
+      } catch (inviteErr) {
+        console.error('projects.controller – create invite error:', inviteErr);
+        inviteErrors.push({
+          userId,
+          error: inviteErr instanceof Error ? inviteErr.message : 'Failed to send invitation',
+        });
+      }
+    }
+
     return res.status(201).json({
       projectId: project.id,
       projectCode: project.project_code,
+      inviteErrors,
     });
   } catch (err) {
     console.error('projects.controller – create error:', err);
@@ -286,7 +328,7 @@ async function join(req, res) {
 
 async function invite(req, res) {
   try {
-    const { userId, role } = req.body;
+    const { userId, role, contributorRole } = req.body;
     const projectId = req.params.id;
 
     if (!userId || typeof userId !== 'string') {
@@ -295,6 +337,10 @@ async function invite(req, res) {
 
     const validRoles = ['member', 'adviser'];
     const memberRole = validRoles.includes(role) ? role : 'member';
+    const normalizedContributorRole =
+      typeof contributorRole === 'string' && contributorRole.trim()
+        ? contributorRole.trim()
+        : null;
 
     const project = await projectsService.getProjectById(projectId);
     if (!project) {
@@ -306,7 +352,13 @@ async function invite(req, res) {
       return res.status(409).json({ error: 'User is already a member or has a pending invitation' });
     }
 
-    await projectsService.inviteToProject(projectId, userId, memberRole, req.user.id);
+    await projectsService.inviteToProject(
+      projectId,
+      userId,
+      memberRole,
+      req.user.id,
+      normalizedContributorRole,
+    );
 
     return res.status(201).json({ success: true, message: 'Invitation sent' });
   } catch (err) {
