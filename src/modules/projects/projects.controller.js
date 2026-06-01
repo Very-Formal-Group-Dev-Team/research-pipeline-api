@@ -221,6 +221,16 @@ async function list(req, res) {
   }
 }
 
+async function getAdvisedStats(req, res) {
+  try {
+    const stats = await projectsService.getAdviserDashboardStats(req.user.id);
+    return res.json(stats);
+  } catch (err) {
+    console.error('projects.controller – getAdvisedStats error:', err);
+    return res.status(500).json({ error: 'Failed to fetch adviser dashboard stats' });
+  }
+}
+
 async function listAdvised(req, res) {
   try {
     const projects = await projectsService.getAdvisedProjects(req.user.id);
@@ -229,6 +239,13 @@ async function listAdvised(req, res) {
       ...p,
       keywords: typeof p.keywords === 'string' ? JSON.parse(p.keywords) : (p.keywords || []),
     }));
+
+    const includeStats =
+      req.query.includeStats === '1' || req.query.includeStats === 'true';
+    if (includeStats) {
+      const stats = await projectsService.getAdviserDashboardStats(req.user.id);
+      return res.json({ projects: mapped, stats });
+    }
 
     return res.json(mapped);
   } catch (err) {
@@ -708,6 +725,7 @@ async function crossReferenceStudies(req, res) {
 module.exports = {
   create,
   list,
+  getAdvisedStats,
   listAdvised,
   getOne,
   getByCode,

@@ -442,6 +442,85 @@ async function getAdvisedProjects(userId) {
   return rows;
 }
 
+function parseScheduleStart(row) {
+  const raw = row.start_time || row.scheduled_at;
+  if (!raw) return null;
+  const parsed = new Date(String(raw).replace(/Z$/i, ''));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function countUpcomingScheduleItems(schedule) {
+  const now = new Date();
+  const inactive = new Set(['cancelled', 'rejected', 'completed']);
+  const rows = [
+    ...(schedule.defenses || []),
+    ...(schedule.meetings || []),
+    ...(schedule.events || []),
+  ];
+  let count = 0;
+  for (const row of rows) {
+    const status = String(row.status || '').toLowerCase();
+    if (inactive.has(status)) continue;
+    const start = parseScheduleStart(row);
+    if (start && start >= now) count += 1;
+  }
+  return count;
+}
+
+function toCount(value) {
+  if (value == null) return 0;
+  if (typeof value === 'bigint') return Number(value);
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+async function getAdviserDashboardStats(adviserUserId) {
+  const advisedProjects = await getAdvisedProjects(adviserUserId);
+
+  let totalAdvisees = 0;
+  if (advisedProjects.length > 0) {
+    const projectIds = advisedProjects.map((p) => p.id);
+    const placeholders = projectIds.map(() => '?').join(', ');
+    const { rows } = await db.query(
+      `SELECT COUNT(DISTINCT pm.user_id) AS cnt
+       FROM project_members pm
+       WHERE pm.project_id IN (${placeholders})
+         AND LOWER(pm.role) IN ('member', 'leader')
+         AND pm.status = 'accepted'
+         AND pm.user_id != ?`,
+      [...projectIds, adviserUserId],
+    );
+    totalAdvisees = toCount(rows[0]?.cnt ?? rows[0]?.count);
+  }
+
+  let activeProjects = 0;
+  let completedProjects = 0;
+  for (const project of advisedProjects) {
+    const status = String(project.status || 'draft').toLowerCase();
+    if (status === 'completed' || status === 'archived') {
+      completedProjects += 1;
+    } else {
+      activeProjects += 1;
+    }
+  }
+
+  let upcomingEvents = 0;
+  try {
+    const { getMySchedule } = require('../schedule/schedule.service');
+    const schedule = await getMySchedule(adviserUserId);
+    upcomingEvents = countUpcomingScheduleItems(schedule);
+  } catch (err) {
+    console.error('getAdviserDashboardStats – schedule count failed:', err);
+  }
+
+  return {
+    totalAdvisees,
+    activeProjects,
+    completedProjects,
+    upcomingEvents,
+  };
+}
+
 const ALLOWED_STATUSES = new Set(['draft', 'active', 'completed', 'archived']);
 
 async function updateProjectStatus(projectId, status, userId) {
@@ -503,6 +582,7 @@ module.exports = {
   getLatestPaperVersion,
   updateProjectKeywords,
   getAdvisedProjects,
+  getAdviserDashboardStats,
   updateProjectStatus,
   updateProjectAbstract,
 };
