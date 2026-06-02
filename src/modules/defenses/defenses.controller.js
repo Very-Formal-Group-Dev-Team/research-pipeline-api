@@ -7,6 +7,9 @@ const {
   getProjectDefenseSchedules,
   cancelDefense,
   rescheduleDefense,
+  getAdviserMeetingById,
+  updateMeeting,
+  completeMeeting,
 } = require('./defenses.service');
 
 async function postDefense(req, res) {
@@ -88,6 +91,46 @@ async function getMyProjectDefenses(req, res) {
   return res.json(defenses);
 }
 
+async function getMeetingById(req, res) {
+  try {
+    const result = await getAdviserMeetingById(req.user.id, req.params.id);
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    return res.json(result.data);
+  } catch (err) {
+    console.error('defenses.controller – getMeetingById error:', err);
+    return res.status(500).json({ error: 'Failed to fetch meeting' });
+  }
+}
+
+async function patchUpdateMeeting(req, res) {
+  const result = await updateMeeting(req.user.id, req.params.id, req.body || {});
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  if (result.conflict) {
+    return res.status(409).json(result);
+  }
+  return res.json({
+    success: true,
+    message: 'Meeting updated',
+    defense: result.data,
+  });
+}
+
+async function patchCompleteMeeting(req, res) {
+  const result = await completeMeeting(req.user.id, req.params.id);
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json({
+    success: true,
+    message: 'Meeting marked complete',
+    defense: result.data,
+  });
+}
+
 async function getProjectMeetings(req, res) {
   try {
     const projectId = req.params.projectId;
@@ -110,6 +153,9 @@ module.exports = {
   getMyDefenses,
   getMyProjectDefenses,
   getProjectMeetings,
+  getMeetingById,
+  patchUpdateMeeting,
+  patchCompleteMeeting,
   patchCancelDefense,
   patchRescheduleDefense,
 };
