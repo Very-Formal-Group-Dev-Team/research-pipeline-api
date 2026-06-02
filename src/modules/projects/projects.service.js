@@ -577,6 +577,52 @@ async function updateProjectStatus(projectId, status, userId) {
   return { data: project };
 }
 
+const ALLOWED_PAPER_STANDARDS = ['ieee', 'apa', 'mla', 'chicago', 'imrad', 'custom'];
+
+function normalizePaperStandard(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ALLOWED_PAPER_STANDARDS.includes(normalized) ? normalized : null;
+}
+
+function normalizeProjectType(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'capstone' ? 'capstone' : normalized === 'thesis' ? 'thesis' : null;
+}
+
+async function updateProjectDetails(projectId, details) {
+  const {
+    title,
+    projectType,
+    paperStandard,
+    program,
+    course,
+    section,
+  } = details;
+
+  await db.query(
+    `UPDATE projects
+     SET title = ?,
+         project_type = ?,
+         paper_standard = ?,
+         program = ?,
+         course = ?,
+         section = ?,
+         updated_at = NOW()
+     WHERE id = ?`,
+    [
+      title,
+      projectType,
+      paperStandard,
+      program,
+      course,
+      section,
+      projectId,
+    ],
+  );
+
+  return getProjectById(projectId);
+}
+
 async function updateProjectAbstract(projectId, abstract) {
   const conn = await db.pool.getConnection();
   try {
@@ -724,6 +770,9 @@ module.exports = {
   getAdvisedProjects,
   getAdviserDashboardStats,
   updateProjectStatus,
+  updateProjectDetails,
+  normalizePaperStandard,
+  normalizeProjectType,
   updateProjectAbstract,
   isProjectLeader,
   deleteProjectByLeader,

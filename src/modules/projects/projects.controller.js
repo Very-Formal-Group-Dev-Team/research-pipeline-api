@@ -558,6 +558,68 @@ async function updateKeywords(req, res) {
   }
 }
 
+async function updateDetails(req, res) {
+  try {
+    const projectId = req.params.id;
+    const userRole = await getRoleByUserId(req.user.id);
+    if (userRole !== 'student') {
+      return res.status(403).json({ error: 'Only students can update project details' });
+    }
+
+    const isMember = await projectsService.isProjectMember(projectId, req.user.id);
+    if (!isMember) {
+      return res.status(403).json({ error: 'You are not a member of this project' });
+    }
+
+    const project = await projectsService.getProjectById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+    if (!title) {
+      return res.status(400).json({ error: 'Project title is required' });
+    }
+
+    const projectType = projectsService.normalizeProjectType(req.body?.projectType);
+    if (!projectType) {
+      return res.status(400).json({ error: 'Project type must be thesis or capstone' });
+    }
+
+    const paperStandard = projectsService.normalizePaperStandard(
+      req.body?.paperStandard ?? req.body?.researchType,
+    );
+    if (!paperStandard) {
+      return res.status(400).json({ error: 'Invalid paper standard' });
+    }
+
+    const program =
+      typeof req.body?.program === 'string' ? req.body.program.trim() || null : null;
+    const course =
+      typeof req.body?.course === 'string' ? req.body.course.trim() || null : null;
+    const section =
+      typeof req.body?.section === 'string' ? req.body.section.trim() || null : null;
+
+    const updated = await projectsService.updateProjectDetails(projectId, {
+      title,
+      projectType,
+      paperStandard,
+      program,
+      course,
+      section,
+    });
+
+    updated.keywords = typeof updated.keywords === 'string'
+      ? JSON.parse(updated.keywords)
+      : (updated.keywords || []);
+
+    return res.json(updated);
+  } catch (err) {
+    console.error('projects.controller – updateDetails error:', err);
+    return res.status(500).json({ error: 'Failed to update project details' });
+  }
+}
+
 async function updateAbstract(req, res) {
   try {
     const projectId = req.params.id;
@@ -777,6 +839,7 @@ module.exports = {
   scheduleDefense,
   updateStatus,
   updateKeywords,
+  updateDetails,
   updateAbstract,
   deleteProject,
   findRelatedStudies,
