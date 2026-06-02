@@ -2,15 +2,17 @@ const db = require('../../../config/db');
 const { getProjectDefenseSchedules } = require('../defenses/defenses.service');
 const { getEventsForInstitution } = require('../events/events.service');
 
-const STATUS_LABEL_CASE = `
+function statusLabelCase(alias) {
+  return `
   CASE
-    WHEN d.status = 'scheduled' THEN 'Scheduled'
-    WHEN d.status = 'pending' THEN 'Pending'
-    WHEN d.status = 'cancelled' THEN 'Cancelled'
-    WHEN d.status = 'rescheduled' THEN 'Rescheduled'
-    WHEN d.status = 'completed' THEN 'Completed'
-    ELSE d.status
+    WHEN ${alias}.status = 'scheduled' THEN 'Scheduled'
+    WHEN ${alias}.status = 'pending' THEN 'Pending'
+    WHEN ${alias}.status = 'cancelled' THEN 'Cancelled'
+    WHEN ${alias}.status = 'rescheduled' THEN 'Rescheduled'
+    WHEN ${alias}.status = 'completed' THEN 'Completed'
+    ELSE ${alias}.status
   END AS status_label`;
+}
 
 async function getUserInstitutionIds(userId) {
   const { rows } = await db.query(
@@ -40,52 +42,60 @@ async function getEventsForUser(userId) {
   return rows;
 }
 
+/**
+ * All adviser-booked meetings for projects the user belongs to (every status).
+ * Used for meeting lists with status filters; calendar uses getProjectDefenseSchedules.
+ */
 async function getMeetingsForMember(userId) {
   const { rows } = await db.query(
-    `SELECT d.id,
-            d.project_id,
+    `SELECT m.id,
+            m.project_id,
             p.title AS project_title,
             p.project_code,
-            d.defense_type,
-            d.scheduled_at AS start_time,
-            COALESCE(d.end_time, d.scheduled_at) AS end_time,
-            d.location,
-            d.modality,
-            d.status,
-            d.created_by,
-            ${STATUS_LABEL_CASE},
+            m.defense_type,
+            m.meeting_title,
+            m.scheduled_at AS start_time,
+            COALESCE(m.end_time, m.scheduled_at) AS end_time,
+            m.location,
+            m.venue,
+            m.modality,
+            m.status,
+            m.created_by,
+            m.meeting_room,
+            m.meeting_url,
+            m.meeting_provider,
+            'meeting' AS schedule_source,
+            ${statusLabelCase('m')},
             u.full_name AS created_by_name,
-            d.created_at
-     FROM meetings d
-     INNER JOIN projects p ON d.project_id = p.id
-     INNER JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ?
-     LEFT JOIN users u ON d.created_by = u.id
-     ORDER BY d.scheduled_at DESC, d.created_at DESC`,
+            (
+              SELECT u2.full_name
+              FROM project_members pm2
+              INNER JOIN users u2 ON u2.id = pm2.user_id
+              WHERE pm2.project_id = m.project_id
+                AND pm2.role = 'adviser'
+                AND pm2.status = 'accepted'
+              ORDER BY pm2.invited_at ASC
+              LIMIT 1
+            ) AS adviser_name,
+            m.created_at
+     FROM meetings m
+     INNER JOIN projects p ON m.project_id = p.id
+     INNER JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ? AND pm.status = 'accepted'
+     LEFT JOIN users u ON m.created_by = u.id
+     ORDER BY m.scheduled_at DESC, m.created_at DESC`,
     [userId]
   );
   return rows;
 }
 
-function splitScheduleRows(rows) {
-  const defenses = [];
-  const meetings = [];
-  for (const row of rows) {
-    if (row.schedule_source === 'meeting') {
-      meetings.push(row);
-    } else {
-      defenses.push(row);
-    }
-  }
-  return { defenses, meetings };
-}
-
 async function getMySchedule(userId) {
-  const [combined, events] = await Promise.all([
+  const [combined, meetings, events] = await Promise.all([
     getProjectDefenseSchedules(userId),
+    getMeetingsForMember(userId),
     getEventsForUser(userId),
   ]);
 
-  const { defenses, meetings } = splitScheduleRows(combined);
+  const defenses = combined.filter((row) => row.schedule_source !== 'meeting');
   return { defenses, meetings, events };
 }
 
