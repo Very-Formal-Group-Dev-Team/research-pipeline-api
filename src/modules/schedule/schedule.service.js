@@ -1,8 +1,5 @@
 const db = require('../../../config/db');
-const {
-  getProjectDefenseSchedules,
-  getDefensesForMember,
-} = require('../defenses/defenses.service');
+const { getProjectDefenseSchedules } = require('../defenses/defenses.service');
 const { getEventsForInstitution } = require('../events/events.service');
 
 const STATUS_LABEL_CASE = `
@@ -69,13 +66,26 @@ async function getMeetingsForMember(userId) {
   return rows;
 }
 
+function splitScheduleRows(rows) {
+  const defenses = [];
+  const meetings = [];
+  for (const row of rows) {
+    if (row.schedule_source === 'meeting') {
+      meetings.push(row);
+    } else {
+      defenses.push(row);
+    }
+  }
+  return { defenses, meetings };
+}
+
 async function getMySchedule(userId) {
-  const [defenses, meetings, events] = await Promise.all([
+  const [combined, events] = await Promise.all([
     getProjectDefenseSchedules(userId),
-    getMeetingsForMember(userId),
     getEventsForUser(userId),
   ]);
 
+  const { defenses, meetings } = splitScheduleRows(combined);
   return { defenses, meetings, events };
 }
 
