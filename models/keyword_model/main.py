@@ -135,7 +135,6 @@ class VectorizationItem(BaseModel):
     term: str
     value: float
 
-
 class VectorizationResponse(BaseModel):
     shape: list[int]
     non_zero: int
