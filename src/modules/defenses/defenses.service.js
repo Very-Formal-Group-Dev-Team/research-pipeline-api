@@ -561,15 +561,25 @@ async function validateScheduleConstraints({
   return { ok: false, conflicts: allConflicts };
 }
 
+function normalizeMeetingTitle(payload) {
+  const raw = payload?.meeting_title ?? payload?.meetingTitle ?? '';
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
 async function createDefense(userId, payload) {
   let conn;
   try {
     const { project_id, defense_type, location, modality, wait_for_slot } = payload;
+    const meeting_title = normalizeMeetingTitle(payload);
     const scheduleWindow = getScheduleWindow(payload);
 
     if (!project_id) return { error: 'project_id is required' };
     if (!defense_type || !['proposal', 'midterm', 'final'].includes(defense_type)) {
       return { error: 'defense_type must be one of: proposal, midterm, final' };
+    }
+    if (!meeting_title) return { error: 'meeting_title is required' };
+    if (meeting_title.length > 255) {
+      return { error: 'meeting_title must be 255 characters or less' };
     }
     if (scheduleWindow.error) return { error: scheduleWindow.error };
     if (!location) return { error: 'location is required' };
@@ -635,15 +645,16 @@ async function createDefense(userId, payload) {
 
     await conn.execute(
       `INSERT INTO ${ADVISER_BOOKING_TABLE} (
-         id, project_id, adviser_id, defense_type, scheduled_at, end_time, location, modality, status, created_by,
+         id, project_id, adviser_id, defense_type, meeting_title, scheduled_at, end_time, location, modality, status, created_by,
          meeting_room, meeting_url, meeting_provider
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         defenseId,
         project_id,
         userId,
         defense_type,
+        meeting_title,
         normalizedSchedule.dbValue,
         normalizedEnd.dbValue,
         location,
@@ -667,8 +678,8 @@ async function createDefense(userId, payload) {
       : 'Defense booking created';
     const eventMessage = appendMeetingLinkToMessage(
       status === 'pending'
-        ? `A ${defense_type} defense request for "${project.title}" was queued for ${scheduledLabel}${location ? ` at ${location}` : ''}.`
-        : `A ${defense_type} defense for "${project.title}" was booked on ${scheduledLabel}${location ? ` at ${location}` : ''}.`,
+        ? `"${meeting_title}" for "${project.title}" was queued for ${scheduledLabel}${location ? ` at ${location}` : ''}.`
+        : `"${meeting_title}" for "${project.title}" was booked on ${scheduledLabel}${location ? ` at ${location}` : ''}.`,
       jitsi.meeting_url
     );
 
@@ -680,6 +691,7 @@ async function createDefense(userId, payload) {
         defenseId,
         projectId: project_id,
         defenseType: defense_type,
+        meetingTitle: meeting_title,
         schedule: normalizedSchedule.dbValue,
         endTime: normalizedEnd.dbValue,
         location,
@@ -696,8 +708,8 @@ async function createDefense(userId, payload) {
       title: status === 'pending' ? 'Defense request awaiting review' : 'Defense booking submitted',
       message: appendMeetingLinkToMessage(
         status === 'pending'
-          ? `A ${defense_type} defense request for "${project.title}" is queued and awaiting available slot.`
-          : `A ${defense_type} defense for "${project.title}" was submitted for ${scheduledLabel}${location ? ` at ${location}` : ''}.`,
+          ? `"${meeting_title}" for "${project.title}" is queued and awaiting available slot.`
+          : `"${meeting_title}" for "${project.title}" was submitted for ${scheduledLabel}${location ? ` at ${location}` : ''}.`,
         jitsi.meeting_url
       ),
       metadata: {
@@ -705,6 +717,7 @@ async function createDefense(userId, payload) {
         projectId: project_id,
         institutionId: project.institution_id,
         defenseType: defense_type,
+        meetingTitle: meeting_title,
         schedule: normalizedSchedule.dbValue,
         endTime: normalizedEnd.dbValue,
         location,
@@ -804,6 +817,7 @@ async function getMeetingsForProject(projectId) {
            p.title AS project_title,
            p.project_code,
            m.defense_type,
+           m.meeting_title,
            m.scheduled_at AS start_time,
            COALESCE(m.end_time, m.scheduled_at) AS end_time,
            m.location,
@@ -829,6 +843,7 @@ async function getMeetingsForProject(projectId) {
            p.title AS project_title,
            p.project_code,
            d.defense_type,
+           NULL AS meeting_title,
            d.scheduled_at AS start_time,
            COALESCE(d.end_time, d.scheduled_at) AS end_time,
            d.location,
@@ -1080,6 +1095,206 @@ async function cancelDefense(userId, defenseId) {
   return { data: updatedRows[0] || null };
 }
 
+function meetingStatusLabel(status) {
+  const labels = {
+    scheduled: 'Scheduled',
+    pending: 'Pending',
+    cancelled: 'Cancelled',
+    rescheduled: 'Rescheduled',
+    completed: 'Completed',
+  };
+  return labels[status] || status;
+}
+
+async function assertAdviserMeetingOwner(userId, meetingId) {
+  if (!meetingId) {
+    return { error: 'meetingId is required', status: 400 };
+  }
+
+  const { rows } = await db.query(
+    `SELECT m.*, p.title AS project_title, p.project_code, p.institution_id
+     FROM ${ADVISER_BOOKING_TABLE} m
+     LEFT JOIN projects p ON p.id = m.project_id
+     WHERE m.id = ?
+     LIMIT 1`,
+    [meetingId]
+  );
+
+  if (!rows.length) {
+    return { error: 'Meeting not found', status: 404 };
+  }
+
+  const meeting = rows[0];
+  if (meeting.created_by !== userId) {
+    return { error: 'You are not allowed to modify this meeting', status: 403 };
+  }
+
+  return { meeting };
+}
+
+async function getAdviserMeetingById(userId, meetingId) {
+  const result = await assertAdviserMeetingOwner(userId, meetingId);
+  if (result.error) return result;
+
+  const meeting = result.meeting;
+  return {
+    data: mapScheduleRow({
+      ...meeting,
+      start_time: meeting.scheduled_at,
+      end_time: meeting.end_time || meeting.scheduled_at,
+      venue: meeting.location,
+      status_label: meetingStatusLabel(meeting.status),
+    }),
+  };
+}
+
+async function completeMeeting(userId, meetingId) {
+  const result = await assertAdviserMeetingOwner(userId, meetingId);
+  if (result.error) return result;
+
+  const meeting = result.meeting;
+  if (meeting.status === 'cancelled') {
+    return { error: 'Cannot complete a cancelled meeting', status: 409 };
+  }
+  if (meeting.status === 'completed') {
+    return { error: 'Meeting is already marked complete', status: 409 };
+  }
+
+  await db.query(
+    `UPDATE ${ADVISER_BOOKING_TABLE} SET status = 'completed' WHERE id = ?`,
+    [meetingId]
+  );
+
+  const { rows: updatedRows } = await db.query(
+    `SELECT m.*, p.title AS project_title, p.project_code
+     FROM ${ADVISER_BOOKING_TABLE} m
+     LEFT JOIN projects p ON p.id = m.project_id
+     WHERE m.id = ?
+     LIMIT 1`,
+    [meetingId]
+  );
+
+  const updated = updatedRows[0];
+  return {
+    data: mapScheduleRow({
+      ...updated,
+      start_time: updated.scheduled_at,
+      end_time: updated.end_time || updated.scheduled_at,
+      venue: updated.location,
+      status_label: meetingStatusLabel('completed'),
+    }),
+  };
+}
+
+async function updateMeeting(userId, meetingId, payload) {
+  const result = await assertAdviserMeetingOwner(userId, meetingId);
+  if (result.error) return result;
+
+  const meeting = result.meeting;
+  if (meeting.status === 'cancelled') {
+    return { error: 'Cannot edit a cancelled meeting', status: 409 };
+  }
+  if (meeting.status === 'completed') {
+    return { error: 'Cannot edit a completed meeting', status: 409 };
+  }
+
+  const meeting_title = payload.meeting_title !== undefined || payload.meetingTitle !== undefined
+    ? normalizeMeetingTitle(payload)
+    : (meeting.meeting_title || '').trim();
+  if (!meeting_title) {
+    return { error: 'meeting_title is required' };
+  }
+  if (meeting_title.length > 255) {
+    return { error: 'meeting_title must be 255 characters or less' };
+  }
+
+  const defense_type = payload.defense_type || payload.defenseType || meeting.defense_type;
+  if (!['proposal', 'midterm', 'final'].includes(defense_type)) {
+    return { error: 'defense_type must be one of: proposal, midterm, final' };
+  }
+
+  const location = payload.location !== undefined ? payload.location : meeting.location;
+  const modality = payload.modality !== undefined ? payload.modality : meeting.modality;
+  if (!location) {
+    return { error: 'location is required' };
+  }
+
+  const scheduleWindow = getScheduleWindow(payload);
+  if (scheduleWindow.error) {
+    return { error: scheduleWindow.error };
+  }
+
+  const normalizedSchedule = scheduleWindow.start;
+  const normalizedEnd = scheduleWindow.end;
+  const scheduleSources = resolveBookingScheduleSources({ booking_side: 'adviser' });
+
+  const scheduleCheck = await validateScheduleConstraints({
+    projectId: meeting.project_id,
+    startAt: normalizedSchedule.dbValue,
+    endAt: normalizedEnd.dbValue,
+    location,
+    fallbackTeacherId: userId,
+    statuses: null,
+    scheduleSources,
+  });
+
+  const conflicts = (scheduleCheck.conflicts || []).filter(
+    (item) => String(item.defense_id) !== String(meetingId),
+  );
+
+  if (conflicts.length) {
+    return {
+      ...buildConflictPayload(
+        conflicts,
+        normalizedSchedule,
+        normalizedEnd,
+        'Schedule overlap detected. Please choose a different schedule window.',
+      ),
+      status: 409,
+    };
+  }
+
+  await db.query(
+    `UPDATE ${ADVISER_BOOKING_TABLE}
+     SET meeting_title = ?,
+         defense_type = ?,
+         scheduled_at = ?,
+         end_time = ?,
+         location = ?,
+         modality = ?
+     WHERE id = ?`,
+    [
+      meeting_title,
+      defense_type,
+      normalizedSchedule.dbValue,
+      normalizedEnd.dbValue,
+      location,
+      modality || 'Online',
+      meetingId,
+    ]
+  );
+
+  const { rows: updatedRows } = await db.query(
+    `SELECT m.*, p.title AS project_title, p.project_code
+     FROM ${ADVISER_BOOKING_TABLE} m
+     LEFT JOIN projects p ON p.id = m.project_id
+     WHERE m.id = ?
+     LIMIT 1`,
+    [meetingId]
+  );
+
+  const updated = updatedRows[0];
+  return {
+    data: mapScheduleRow({
+      ...updated,
+      start_time: updated.scheduled_at,
+      end_time: updated.end_time || updated.scheduled_at,
+      venue: updated.location,
+      status_label: meetingStatusLabel(updated.status),
+    }),
+  };
+}
+
 async function rescheduleDefense(userId, defenseId, payload) {
   if (!defenseId) {
     return { error: 'defenseId is required', status: 400 };
@@ -1235,7 +1450,7 @@ async function processAllPendingDefenses() {
       `SELECT m.*, p.institution_id, p.title AS project_title
        FROM ${ADVISER_BOOKING_TABLE} m
        LEFT JOIN projects p ON p.id = m.project_id
-       WHERE status = 'pending'
+       WHERE m.status = 'pending'
        ORDER BY m.created_at ASC`
     );
 
@@ -1324,6 +1539,9 @@ module.exports = {
   getProjectDefenseSchedules,
   cancelDefense,
   rescheduleDefense,
+  getAdviserMeetingById,
+  updateMeeting,
+  completeMeeting,
   validateScheduleConstraints,
   getScheduleWindow,
 };

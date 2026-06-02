@@ -6,6 +6,9 @@ const {
   getMyDefenses,
   getMyProjectDefenses,
   getProjectMeetings,
+  getMeetingById,
+  patchUpdateMeeting,
+  patchCompleteMeeting,
   patchCancelDefense,
   patchRescheduleDefense,
 } = require('./defenses.controller');
@@ -25,6 +28,9 @@ router.post('/propose', asyncHandler(postDefenseProposal));
 router.get('/me', asyncHandler(getMyDefenses));
 router.get('/my-projects', asyncHandler(getMyProjectDefenses));
 router.get('/project/:projectId', asyncHandler(getProjectMeetings));
+router.get('/:id', asyncHandler(getMeetingById));
+router.patch('/:id', asyncHandler(patchUpdateMeeting));
+router.patch('/:id/complete', asyncHandler(patchCompleteMeeting));
 router.patch('/:id/cancel', asyncHandler(patchCancelDefense));
 router.patch('/:id/reschedule', asyncHandler(patchRescheduleDefense));
 
