@@ -44,6 +44,7 @@ router.patch('/:id/keywords', asyncHandler(controller.updateKeywords));
 router.post('/:id/schedule', asyncHandler(controller.scheduleDefense));
 router.patch('/:id/status', asyncHandler(controller.updateStatus));
 router.patch('/:id/abstract', asyncHandler(controller.updateAbstract));
+router.delete('/:id', asyncHandler(controller.deleteProject));
 router.use('/:id/paper-versions', paperVersionsRouter);
 
 module.exports = router;

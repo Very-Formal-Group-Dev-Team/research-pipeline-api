@@ -673,6 +673,36 @@ async function findRelatedStudies(req, res) {
   }
 }
 
+async function deleteProject(req, res) {
+  try {
+    const projectId = req.params.id;
+    const userRole = await getRoleByUserId(req.user.id);
+    if (userRole !== 'student') {
+      return res.status(403).json({ error: 'Only students can delete projects' });
+    }
+
+    const confirmTitle = req.body?.confirmTitle;
+    if (typeof confirmTitle !== 'string' || !confirmTitle.trim()) {
+      return res.status(400).json({ error: 'confirmTitle is required' });
+    }
+
+    const result = await projectsService.deleteProjectByLeader(
+      projectId,
+      req.user.id,
+      confirmTitle,
+    );
+
+    if (result.error) {
+      return res.status(result.status || 500).json({ error: result.error });
+    }
+
+    return res.json({ success: true, message: 'Project deleted successfully' });
+  } catch (err) {
+    console.error('projects.controller – deleteProject error:', err);
+    return res.status(500).json({ error: 'Failed to delete project' });
+  }
+}
+
 async function crossReferenceStudies(req, res) {
   try {
     const projectId = req.params.id;
@@ -748,6 +778,7 @@ module.exports = {
   updateStatus,
   updateKeywords,
   updateAbstract,
+  deleteProject,
   findRelatedStudies,
   crossReferenceStudies,
 };
