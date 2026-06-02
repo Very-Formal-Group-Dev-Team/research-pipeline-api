@@ -1,5 +1,23 @@
+const path = require('path');
+const fs = require('fs');
 const db = require('../../../config/db');
+const { uploadBase } = require('../../../config/env');
 const notificationsService = require('../notifications/notifications.service');
+
+const FILES_DIR = path.join(uploadBase, 'files');
+
+function safeUnlinkUploadedFile(fileUrl) {
+  if (!fileUrl) return;
+  const filename = path.basename(String(fileUrl));
+  const absolutePath = path.normalize(path.join(FILES_DIR, filename));
+  const normalizedDir = path.normalize(FILES_DIR);
+  if (!absolutePath.startsWith(normalizedDir)) return;
+  try {
+    if (fs.existsSync(absolutePath)) fs.unlinkSync(absolutePath);
+  } catch {
+    // Best-effort file cleanup; DB delete still proceeds.
+  }
+}
 
 async function createProject({
   title,
@@ -559,6 +577,52 @@ async function updateProjectStatus(projectId, status, userId) {
   return { data: project };
 }
 
+const ALLOWED_PAPER_STANDARDS = ['ieee', 'apa', 'mla', 'chicago', 'imrad', 'custom'];
+
+function normalizePaperStandard(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ALLOWED_PAPER_STANDARDS.includes(normalized) ? normalized : null;
+}
+
+function normalizeProjectType(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'capstone' ? 'capstone' : normalized === 'thesis' ? 'thesis' : null;
+}
+
+async function updateProjectDetails(projectId, details) {
+  const {
+    title,
+    projectType,
+    paperStandard,
+    program,
+    course,
+    section,
+  } = details;
+
+  await db.query(
+    `UPDATE projects
+     SET title = ?,
+         project_type = ?,
+         paper_standard = ?,
+         program = ?,
+         course = ?,
+         section = ?,
+         updated_at = NOW()
+     WHERE id = ?`,
+    [
+      title,
+      projectType,
+      paperStandard,
+      program,
+      course,
+      section,
+      projectId,
+    ],
+  );
+
+  return getProjectById(projectId);
+}
+
 async function updateProjectAbstract(projectId, abstract) {
   const conn = await db.pool.getConnection();
   try {
@@ -575,6 +639,112 @@ async function updateProjectAbstract(projectId, abstract) {
   } finally {
     conn.release();
   }
+}
+
+async function isProjectLeader(projectId, userId) {
+  const { rows } = await db.query(
+    `SELECT id FROM project_members
+     WHERE project_id = ? AND user_id = ? AND role = 'leader' AND status = 'accepted'
+     LIMIT 1`,
+    [projectId, userId],
+  );
+  return rows.length > 0;
+}
+
+async function deleteProjectByLeader(projectId, userId, confirmTitle) {
+  const project = await getProjectById(projectId);
+  if (!project) {
+    return { error: 'Project not found', status: 404 };
+  }
+
+  if (!(await isProjectLeader(projectId, userId))) {
+    return { error: 'Only the project leader can delete this project', status: 403 };
+  }
+
+  if (typeof confirmTitle !== 'string' || confirmTitle !== project.title) {
+    return {
+      error: 'Type the project title exactly as shown to confirm deletion',
+      status: 400,
+    };
+  }
+
+  const [paperVersionsResult, projectFiles] = await Promise.all([
+    db.query('SELECT file_url FROM paper_versions WHERE project_id = ?', [projectId]),
+    getProjectFiles(projectId),
+  ]);
+  const paperVersionRows = paperVersionsResult.rows || [];
+
+  const conn = await db.pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [documentRows] = await conn.execute(
+      'SELECT id FROM documents WHERE project_id = ?',
+      [projectId],
+    );
+    const documentIds = (documentRows || []).map((row) => row.id);
+
+    if (documentIds.length) {
+      const placeholders = documentIds.map(() => '?').join(', ');
+      await conn.execute(
+        `DELETE FROM comments WHERE document_id IN (${placeholders})`,
+        documentIds,
+      );
+      await conn.execute(
+        `DELETE FROM document_versions WHERE document_id IN (${placeholders})`,
+        documentIds,
+      );
+      await conn.execute(
+        `DELETE FROM documents WHERE id IN (${placeholders})`,
+        documentIds,
+      );
+    }
+
+    await conn.execute('DELETE FROM evaluations WHERE project_id = ?', [projectId]);
+    await conn.execute('DELETE FROM defense_results WHERE project_id = ?', [projectId]);
+
+    try {
+      await conn.execute(
+        `DELETE dv FROM defense_verifications dv
+         INNER JOIN defenses d ON d.id = dv.defense_id
+         WHERE d.project_id = ?`,
+        [projectId],
+      );
+    } catch (err) {
+      if (err?.code !== 'ER_NO_SUCH_TABLE') throw err;
+    }
+
+    await conn.execute('DELETE FROM defenses WHERE project_id = ?', [projectId]);
+
+    try {
+      await conn.execute('DELETE FROM meetings WHERE project_id = ?', [projectId]);
+    } catch (err) {
+      if (err?.code !== 'ER_NO_SUCH_TABLE') throw err;
+    }
+
+    await conn.execute('DELETE FROM project_proposals WHERE project_id = ?', [projectId]);
+    await conn.execute('DELETE FROM project_members WHERE project_id = ?', [projectId]);
+    await conn.execute('DELETE FROM paper_versions WHERE project_id = ?', [projectId]);
+    await conn.execute('DELETE FROM project_files WHERE project_id = ?', [projectId]);
+    await conn.execute('DELETE FROM projects WHERE id = ?', [projectId]);
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+
+  for (const row of paperVersionRows) {
+    safeUnlinkUploadedFile(row.file_url);
+  }
+  for (const file of projectFiles) {
+    safeUnlinkUploadedFile(file.file_url);
+  }
+  safeUnlinkUploadedFile(project.document_reference);
+
+  return { success: true };
 }
 
 module.exports = {
@@ -600,5 +770,10 @@ module.exports = {
   getAdvisedProjects,
   getAdviserDashboardStats,
   updateProjectStatus,
+  updateProjectDetails,
+  normalizePaperStandard,
+  normalizeProjectType,
   updateProjectAbstract,
+  isProjectLeader,
+  deleteProjectByLeader,
 };
