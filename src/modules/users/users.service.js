@@ -271,9 +271,13 @@ async function searchUsersByEmail(email, role, limit = 10, excludeUserId = null)
   const params = [pattern, pattern];
   if (isUuid) params.push(email);
 
-  if (role) {
-    query += ' AND ur.role = ?';
-    params.push(role);
+  if (role === 'student') {
+    query += " AND ur.role = 'student'";
+  } else if (role === 'adviser') {
+    query += " AND ur.role IN ('adviser', 'teacher')";
+  } else {
+    // Default: project invites — students and advisers only (no coordinators)
+    query += " AND ur.role IN ('student', 'adviser', 'teacher')";
   }
 
   if (excludeUserId) {

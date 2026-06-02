@@ -1,7 +1,18 @@
 const db = require('../../../config/db');
 const notificationsService = require('../notifications/notifications.service');
 
-async function createProject({ title, abstract, keywords, researchType, program, course, section, documentReference, createdBy }) {
+async function createProject({
+  title,
+  abstract,
+  keywords,
+  researchType,
+  projectType,
+  program,
+  course,
+  section,
+  documentReference,
+  createdBy,
+}) {
   const conn = await db.pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -12,9 +23,13 @@ async function createProject({ title, abstract, keywords, researchType, program,
     );
     const institutionId = roleRows[0]?.institution_id || null;
 
+    const normalizedProjectType = String(projectType || 'thesis').trim().toLowerCase();
+    const safeProjectType =
+      normalizedProjectType === 'capstone' ? 'capstone' : 'thesis';
+
     const [result] = await conn.execute(
       `INSERT INTO projects (title, description, abstract, keywords, paper_standard, program, course, section, document_reference, created_by, institution_id, status, project_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'thesis')`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`,
       [
         title,
         abstract,
@@ -27,6 +42,7 @@ async function createProject({ title, abstract, keywords, researchType, program,
         documentReference || null,
         createdBy,
         institutionId,
+        safeProjectType,
       ]
     );
 
@@ -93,7 +109,7 @@ async function getProjectMembers(projectId) {
     `SELECT pm.*, u.full_name, u.email, u.avatar_url
      FROM project_members pm
      JOIN users u ON u.id = pm.user_id
-     WHERE pm.project_id = ?
+     WHERE pm.project_id = ? AND pm.status = 'accepted'
      ORDER BY pm.invited_at ASC`,
     [projectId]
   );

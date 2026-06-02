@@ -109,10 +109,16 @@ async function callKeywordModel(extractedText) {
 
 async function create(req, res) {
   try {
-    const { title, abstract, keywords, researchType, program, course, section } = req.body;
+    const { title, abstract, keywords, researchType, projectType, program, course, section } =
+      req.body;
 
     if (!title || !title.trim()) {
       return res.status(400).json({ error: 'Project title is required' });
+    }
+
+    const normalizedProjectType = String(projectType || 'thesis').trim().toLowerCase();
+    if (!['thesis', 'capstone'].includes(normalizedProjectType)) {
+      return res.status(400).json({ error: 'Project type must be thesis or capstone' });
     }
 
     const normalizedAbstract = typeof abstract === 'string' ? abstract.trim() : '';
@@ -131,6 +137,7 @@ async function create(req, res) {
       abstract: normalizedAbstract,
       keywords: parsedKeywords,
       researchType: researchType || 'ieee',
+      projectType: normalizedProjectType,
       program: program || null,
       course: course || null,
       section: section || null,
