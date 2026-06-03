@@ -37,6 +37,7 @@ router.get('/:id/members', asyncHandler(controller.getMembers));
 router.get('/:id/meetings', asyncHandler(controller.getMeetings));
 router.get('/:id/files', asyncHandler(controller.getFiles));
 router.get('/:id/invitations', asyncHandler(controller.getInvitations));
+router.delete('/:id/members/:memberId', asyncHandler(controller.removeMember));
 router.post('/:id/invite', asyncHandler(controller.invite));
 router.post('/:id/find-related-studies', asyncHandler(controller.findRelatedStudies));
 router.get('/:id/cross-reference', asyncHandler(controller.crossReferenceStudies));

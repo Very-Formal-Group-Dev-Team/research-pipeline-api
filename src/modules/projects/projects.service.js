@@ -203,6 +203,16 @@ async function isProjectMember(projectId, userId) {
   return rows.length > 0;
 }
 
+async function isAcceptedProjectMember(projectId, userId) {
+  const { rows } = await db.query(
+    `SELECT id FROM project_members
+     WHERE project_id = ? AND user_id = ? AND status = 'accepted'
+     LIMIT 1`,
+    [projectId, userId],
+  );
+  return rows.length > 0;
+}
+
 async function joinProject(projectId, userId, memberRole) {
   await db.query(
     `INSERT INTO project_members (project_id, user_id, role, status)
@@ -221,6 +231,15 @@ async function inviteToProject(projectId, userId, role, invitedByUserId, contrib
        VALUES (?, ?, ?, ?, 'pending')`,
       [projectId, userId, role, contributorRole || null]
     );
+
+    const [memberRows] = await conn.execute(
+      `SELECT id FROM project_members
+       WHERE project_id = ? AND user_id = ? AND status = 'pending'
+       ORDER BY invited_at DESC
+       LIMIT 1`,
+      [projectId, userId],
+    );
+    const invitationId = memberRows[0]?.id || null;
 
     const [projectRows] = await conn.execute(
       `SELECT p.title,
@@ -250,6 +269,7 @@ async function inviteToProject(projectId, userId, role, invitedByUserId, contrib
       message: `You were invited by ${inviterName} to join "${project.title}" as ${roleLabel}.`,
       metadata: {
         projectId,
+        invitationId,
         role,
         contributorRole: contributorRole || null,
         invitedByUserId: invitedByUserId || project.created_by,
@@ -459,6 +479,61 @@ async function getProjectInvitations(projectId) {
       avatar_url: r.avatar_url,
     },
   }));
+}
+
+async function removeProjectMember(projectId, memberId, requestedByUserId) {
+  const canManage = await isAcceptedProjectMember(projectId, requestedByUserId);
+  if (!canManage) {
+    return { error: 'You must be an accepted project member to manage the team', status: 403 };
+  }
+
+  const { rows } = await db.query(
+    `SELECT id, user_id, role, status
+     FROM project_members
+     WHERE id = ? AND project_id = ?
+     LIMIT 1`,
+    [memberId, projectId],
+  );
+  const member = rows[0];
+  if (!member) {
+    return { error: 'Team member not found', status: 404 };
+  }
+
+  if (member.role === 'leader') {
+    return { error: 'Cannot remove the project leader', status: 400 };
+  }
+
+  if (!['pending', 'accepted'].includes(member.status)) {
+    return { error: 'This team member cannot be removed', status: 400 };
+  }
+
+  const conn = await db.pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    if (member.status === 'pending') {
+      await notificationsService.deleteProjectInvitationNotifications({
+        userId: member.user_id,
+        projectId,
+        invitationId: member.id,
+        conn,
+      });
+    }
+
+    await conn.execute('DELETE FROM project_members WHERE id = ?', [memberId]);
+    await conn.commit();
+
+    return {
+      success: true,
+      reverted: member.status === 'pending',
+      removed: member.status === 'accepted',
+    };
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 async function getAdvisedProjects(userId) {
@@ -754,6 +829,8 @@ module.exports = {
   getProjectByCode,
   getProjectMembers,
   isProjectMember,
+  isAcceptedProjectMember,
+  removeProjectMember,
   joinProject,
   inviteToProject,
   getPendingInvitationsForUser,
