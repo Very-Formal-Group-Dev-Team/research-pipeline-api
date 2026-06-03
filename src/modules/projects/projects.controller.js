@@ -423,11 +423,20 @@ async function respondInvitation(req, res) {
       return res.status(400).json({ error: 'Invitation has already been responded to' });
     }
 
-    await projectsService.respondToInvitation(invitationId, accept, req.user.id);
+    const result = await projectsService.respondToInvitation(invitationId, accept, req.user.id);
 
-    return res.json({ success: true, status: accept ? 'accepted' : 'declined' });
+    return res.json({
+      success: true,
+      status: accept ? 'accepted' : 'declined',
+      projectId: result.projectId,
+      role: result.role,
+    });
   } catch (err) {
     console.error('projects.controller – respondInvitation error:', err);
+    const message = err instanceof Error ? err.message : 'Failed to respond to invitation';
+    if (message.includes('not found') || message.includes('already responded')) {
+      return res.status(400).json({ error: message });
+    }
     return res.status(500).json({ error: 'Failed to respond to invitation' });
   }
 }

@@ -1186,6 +1186,41 @@ async function completeMeeting(userId, meetingId) {
   };
 }
 
+async function restoreMeeting(userId, meetingId) {
+  const result = await assertAdviserMeetingOwner(userId, meetingId);
+  if (result.error) return result;
+
+  const meeting = result.meeting;
+  if (meeting.status !== 'completed' && meeting.status !== 'cancelled') {
+    return { error: 'Only completed or cancelled meetings can be reverted', status: 409 };
+  }
+
+  await db.query(
+    `UPDATE ${ADVISER_BOOKING_TABLE} SET status = 'scheduled' WHERE id = ?`,
+    [meetingId]
+  );
+
+  const { rows: updatedRows } = await db.query(
+    `SELECT m.*, p.title AS project_title, p.project_code
+     FROM ${ADVISER_BOOKING_TABLE} m
+     LEFT JOIN projects p ON p.id = m.project_id
+     WHERE m.id = ?
+     LIMIT 1`,
+    [meetingId]
+  );
+
+  const updated = updatedRows[0];
+  return {
+    data: mapScheduleRow({
+      ...updated,
+      start_time: updated.scheduled_at,
+      end_time: updated.end_time || updated.scheduled_at,
+      venue: updated.location,
+      status_label: meetingStatusLabel('scheduled'),
+    }),
+  };
+}
+
 async function updateMeeting(userId, meetingId, payload) {
   const result = await assertAdviserMeetingOwner(userId, meetingId);
   if (result.error) return result;
@@ -1542,6 +1577,7 @@ module.exports = {
   getAdviserMeetingById,
   updateMeeting,
   completeMeeting,
+  restoreMeeting,
   validateScheduleConstraints,
   getScheduleWindow,
 };

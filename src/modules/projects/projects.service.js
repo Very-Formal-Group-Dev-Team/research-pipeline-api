@@ -339,10 +339,23 @@ async function respondToInvitation(invitationId, accept, respondedByUserId) {
 
     const invitation = invitationRows[0];
 
-    await conn.execute(
-      'UPDATE project_members SET status = ?, responded_at = NOW() WHERE id = ?',
-      [status, invitationId]
+    const [updateResult] = await conn.execute(
+      `UPDATE project_members
+       SET status = ?, responded_at = NOW()
+       WHERE id = ? AND user_id = ? AND status = 'pending'`,
+      [status, invitationId, respondedByUserId],
     );
+
+    if (!updateResult.affectedRows) {
+      throw new Error('Invitation not found or already responded to');
+    }
+
+    await notificationsService.deleteProjectInvitationNotifications({
+      userId: invitation.user_id,
+      projectId: invitation.project_id,
+      invitationId: invitation.id,
+      conn,
+    });
 
     if (invitation.created_by && invitation.created_by !== respondedByUserId) {
       const responderName = invitation.responder_name || 'A user';
@@ -363,6 +376,11 @@ async function respondToInvitation(invitationId, accept, respondedByUserId) {
     }
 
     await conn.commit();
+    return {
+      projectId: invitation.project_id,
+      role: invitation.role,
+      status,
+    };
   } catch (err) {
     await conn.rollback();
     throw err;
@@ -538,15 +556,15 @@ async function removeProjectMember(projectId, memberId, requestedByUserId) {
 
 async function getAdvisedProjects(userId) {
   const { rows } = await db.query(
-    `SELECT p.*, pm.role AS member_role
+    `SELECT DISTINCT p.*, pm.role AS member_role
      FROM projects p
-     JOIN project_members pm
+     INNER JOIN project_members pm
        ON pm.project_id = p.id
-       AND pm.user_id = ?
-       AND pm.status = 'accepted'
-       AND pm.role = 'adviser'
+      AND pm.user_id = ?
+      AND pm.status = 'accepted'
+      AND pm.role = 'adviser'
      ORDER BY p.created_at DESC`,
-    [userId]
+    [userId],
   );
   return rows;
 }
