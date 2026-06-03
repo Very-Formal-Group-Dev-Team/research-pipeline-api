@@ -442,6 +442,32 @@ async function getInvitations(req, res) {
   }
 }
 
+async function removeMember(req, res) {
+  try {
+    const projectId = req.params.id;
+    const memberId = req.params.memberId;
+
+    const project = await projectsService.getProjectById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const result = await projectsService.removeProjectMember(projectId, memberId, req.user.id);
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+
+    return res.json({
+      success: true,
+      reverted: Boolean(result.reverted),
+      removed: Boolean(result.removed),
+    });
+  } catch (err) {
+    console.error('projects.controller – removeMember error:', err);
+    return res.status(500).json({ error: 'Failed to remove team member' });
+  }
+}
+
 async function scheduleDefense(req, res) {
   try {
     const projectId = req.params.id;
@@ -836,6 +862,7 @@ module.exports = {
   getMyInvitations,
   respondInvitation,
   getInvitations,
+  removeMember,
   scheduleDefense,
   updateStatus,
   updateKeywords,

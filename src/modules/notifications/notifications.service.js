@@ -73,9 +73,47 @@ async function markAllNotificationsAsRead(userId) {
   return rows;
 }
 
+/** Remove pending project-invitation alerts for a user (e.g. when an invite is reverted). */
+async function deleteProjectInvitationNotifications({ userId, projectId, invitationId, conn = null }) {
+  const queryRunner = conn || db;
+  const params = [userId, invitationId, projectId];
+
+  if (conn) {
+    await conn.execute(
+      `DELETE FROM notifications
+       WHERE user_id = ?
+         AND type = 'invitation'
+         AND (
+           JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.invitationId')) = ?
+           OR (
+             JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.projectId')) = ?
+             AND title = 'Project invitation'
+           )
+         )`,
+      params,
+    );
+    return;
+  }
+
+  await queryRunner.query(
+    `DELETE FROM notifications
+     WHERE user_id = ?
+       AND type = 'invitation'
+       AND (
+         JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.invitationId')) = ?
+         OR (
+           JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.projectId')) = ?
+           AND title = 'Project invitation'
+         )
+       )`,
+    params,
+  );
+}
+
 module.exports = {
   createNotification,
   getNotificationsForUser,
   markNotificationAsRead,
   markAllNotificationsAsRead,
+  deleteProjectInvitationNotifications,
 };
