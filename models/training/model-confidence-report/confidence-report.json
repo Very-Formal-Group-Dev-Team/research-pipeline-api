@@ -1,0 +1,103 @@
+{
+  "metrics": {
+    "samples": 1001,
+    "classes": 107,
+    "top_k_used": 5,
+    "top1_accuracy": 0.6003996003996004,
+    "top3_accuracy": 0.7372627372627373,
+    "top5_accuracy": 0.7952047952047953,
+    "micro_precision": 0.2017982017982018,
+    "micro_recall": 0.6922549691569568,
+    "micro_f1": 0.3125,
+    "macro_precision": 0.1378112634572658,
+    "macro_recall": 0.24981483054132766,
+    "macro_f1": 0.13825924079461774,
+    "mean_top_confidence": 0.5426418187184313,
+    "mean_confidence_correct": 0.6215613673336109,
+    "mean_confidence_incorrect": 0.4240651969241243,
+    "ece": 0.12795486622053154,
+    "brier_top1": 0.17795554858880255
+  },
+  "bins": [
+    {
+      "bin": 0,
+      "range_low": 0.0,
+      "range_high": 0.1,
+      "count": 0,
+      "accuracy": 0.0,
+      "avg_confidence": 0.05
+    },
+    {
+      "bin": 1,
+      "range_low": 0.1,
+      "range_high": 0.2,
+      "count": 0,
+      "accuracy": 0.0,
+      "avg_confidence": 0.15000000000000002
+    },
+    {
+      "bin": 2,
+      "range_low": 0.2,
+      "range_high": 0.30000000000000004,
+      "count": 35,
+      "accuracy": 0.05714285714285714,
+      "avg_confidence": 0.28399759069003266
+    },
+    {
+      "bin": 3,
+      "range_low": 0.30000000000000004,
+      "range_high": 0.4,
+      "count": 230,
+      "accuracy": 0.2608695652173913,
+      "avg_confidence": 0.3494753003841249
+    },
+    {
+      "bin": 4,
+      "range_low": 0.4,
+      "range_high": 0.5,
+      "count": 198,
+      "accuracy": 0.41414141414141414,
+      "avg_confidence": 0.4485576063103588
+    },
+    {
+      "bin": 5,
+      "range_low": 0.5,
+      "range_high": 0.6000000000000001,
+      "count": 173,
+      "accuracy": 0.7572254335260116,
+      "avg_confidence": 0.5523272414145071
+    },
+    {
+      "bin": 6,
+      "range_low": 0.6000000000000001,
+      "range_high": 0.7000000000000001,
+      "count": 148,
+      "accuracy": 0.8243243243243243,
+      "avg_confidence": 0.651178942888854
+    },
+    {
+      "bin": 7,
+      "range_low": 0.7000000000000001,
+      "range_high": 0.8,
+      "count": 129,
+      "accuracy": 0.8992248062015504,
+      "avg_confidence": 0.7494900179287838
+    },
+    {
+      "bin": 8,
+      "range_low": 0.8,
+      "range_high": 0.9,
+      "count": 76,
+      "accuracy": 1.0,
+      "avg_confidence": 0.847729361299431
+    },
+    {
+      "bin": 9,
+      "range_low": 0.9,
+      "range_high": 1.0,
+      "count": 12,
+      "accuracy": 1.0,
+      "avg_confidence": 0.917673303447407
+    }
+  ]
+}
