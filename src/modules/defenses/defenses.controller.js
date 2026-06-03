@@ -10,6 +10,7 @@ const {
   getAdviserMeetingById,
   updateMeeting,
   completeMeeting,
+  restoreMeeting,
 } = require('./defenses.service');
 
 async function postDefense(req, res) {
@@ -131,6 +132,18 @@ async function patchCompleteMeeting(req, res) {
   });
 }
 
+async function patchRestoreMeeting(req, res) {
+  const result = await restoreMeeting(req.user.id, req.params.id);
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json({
+    success: true,
+    message: 'Meeting restored to scheduled',
+    defense: result.data,
+  });
+}
+
 async function getProjectMeetings(req, res) {
   try {
     const projectId = req.params.projectId;
@@ -156,6 +169,7 @@ module.exports = {
   getMeetingById,
   patchUpdateMeeting,
   patchCompleteMeeting,
+  patchRestoreMeeting,
   patchCancelDefense,
   patchRescheduleDefense,
 };

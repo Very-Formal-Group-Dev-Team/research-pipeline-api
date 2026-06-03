@@ -42,6 +42,9 @@ router.post('/defenses/:defenseId/verify', asyncHandler(controller.verifyDefense
 router.post('/defenses/:defenseId/reject', asyncHandler(controller.rejectDefense));
 router.patch('/defenses/:defenseId/venue', asyncHandler(controller.setVenue));
 router.delete('/defenses/:defenseId', asyncHandler(controller.deleteDefense));
+router.patch('/defenses/:defenseId/cancel', asyncHandler(controller.cancelDefense));
+router.patch('/defenses/:defenseId/complete', asyncHandler(controller.completeDefense));
+router.patch('/defenses/:defenseId/revert', asyncHandler(controller.revertDefense));
 
 // Create defenses for entire course
 router.post('/courses/:courseId/defenses', asyncHandler(controller.createDefenseForCourse));
@@ -58,6 +61,9 @@ router.delete('/rubrics/:rubricId', asyncHandler(controller.deleteRubric));
 // Institution calendar events
 router.get('/events', asyncHandler(eventsController.listEvents));
 router.post('/events', asyncHandler(eventsController.createEvent));
+router.patch('/events/:eventId', asyncHandler(eventsController.updateEvent));
+router.patch('/events/:eventId/complete', asyncHandler(eventsController.completeEvent));
 router.patch('/events/:eventId/cancel', asyncHandler(eventsController.cancelEvent));
+router.patch('/events/:eventId/revert', asyncHandler(eventsController.revertEvent));
 
 module.exports = router;

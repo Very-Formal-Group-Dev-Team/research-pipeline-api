@@ -126,11 +126,12 @@ async function listAllDefenses(req, res) {
 }
 
 async function verifyDefense(req, res) {
-  const { venue, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense } = req.body;
+  const { venue, location, modality, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense } =
+    req.body;
   const result = await coordinatorService.verifyDefense(
     req.params.defenseId,
     req.user.id,
-    { venue, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense }
+    { venue, location, modality, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense }
   );
 
   if (result.error) {
@@ -171,12 +172,40 @@ async function setVenue(req, res) {
 }
 
 async function deleteDefense(req, res) {
-  const result = await coordinatorService.deleteDefense(
+  const result = await coordinatorService.cancelCoordinatorDefense(
     req.params.defenseId,
     req.institution.id
   );
   if (result.error) {
-    return res.status(result.status || 404).json({ error: result.error });
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
+async function cancelDefense(req, res) {
+  return deleteDefense(req, res);
+}
+
+async function completeDefense(req, res) {
+  const result = await coordinatorService.completeCoordinatorDefense(
+    req.params.defenseId,
+    req.institution.id
+  );
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
+async function revertDefense(req, res) {
+  const previousStatus = req.body?.previousStatus;
+  const result = await coordinatorService.revertCoordinatorDefense(
+    req.params.defenseId,
+    req.institution.id,
+    previousStatus
+  );
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
   }
   return res.json(result.data);
 }
@@ -297,6 +326,9 @@ module.exports = {
   rejectDefense,
   setVenue,
   deleteDefense,
+  cancelDefense,
+  completeDefense,
+  revertDefense,
   createDefenseForCourse,
   bookDefenseSchedule,
   getInstitutionProjects,

@@ -47,6 +47,28 @@ async function notifyInstitutionCoordinators({ institutionId, excludeUserId, pay
   const recipients = userIds.filter((userId) => userId !== excludeUserId);
   await notifyUsers(recipients, payload, conn);
 }
+
+/** Projects/defenses visible to a coordinator (institution id, linked course, or course-assigned advisers). */
+function coordinatorProjectScopeSql(projectAlias = 'p', courseAlias = 'c') {
+  return `(
+    ${projectAlias}.institution_id = ?
+    OR ${courseAlias}.institution_id = ?
+    OR EXISTS (
+      SELECT 1
+      FROM project_members pm_scope
+      INNER JOIN course_advisers ca_scope ON ca_scope.user_id = pm_scope.user_id
+      INNER JOIN courses c_scope ON c_scope.id = ca_scope.course_id AND c_scope.institution_id = ?
+      WHERE pm_scope.project_id = ${projectAlias}.id
+        AND pm_scope.role = 'adviser'
+        AND pm_scope.status = 'accepted'
+    )
+  )`;
+}
+
+function coordinatorProjectScopeBinds(institutionId) {
+  return [institutionId, institutionId, institutionId];
+}
+
 async function getDefenseScheduleExpr() {
   if (defenseScheduleExprCache) {
     return defenseScheduleExprCache;
@@ -767,10 +789,10 @@ async function getPendingDefenses(institutionId) {
      INNER JOIN projects p ON d.project_id = p.id
      LEFT JOIN courses c ON p.course_id = c.id
      LEFT JOIN users u ON d.created_by = u.id
-     WHERE (p.institution_id = ? OR c.institution_id = ?)
+     WHERE ${coordinatorProjectScopeSql('p', 'c')}
        AND d.status = 'pending'
      ORDER BY ${scheduleExpr} ASC`,
-    [institutionId, institutionId]
+    coordinatorProjectScopeBinds(institutionId)
   );
   return rows.map(normalizeDefenseTimeRange);
 }
@@ -798,14 +820,18 @@ async function getAllDefensesForInstitution(institutionId) {
      INNER JOIN projects p ON d.project_id = p.id
      LEFT JOIN courses c ON p.course_id = c.id
      LEFT JOIN users u ON d.created_by = u.id
-     WHERE (p.institution_id = ? OR c.institution_id = ?)
+     WHERE ${coordinatorProjectScopeSql('p', 'c')}
      ORDER BY ${scheduleExpr} DESC`,
-    [institutionId, institutionId]
+    coordinatorProjectScopeBinds(institutionId)
   );
   return rows.map(normalizeDefenseTimeRange);
 }
 
-async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense }) {
+async function verifyDefense(
+  defenseId,
+  coordinatorId,
+  { venue, location, modality, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense }
+) {
   const conn = await db.pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -842,7 +868,10 @@ async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule
       [defense.project_id]
     );
 
-    const targetLocation = venue || defense.venue || defense.location || null;
+    const targetLocation = venue || location || defense.venue || defense.location || null;
+    const resolvedModality = modality || defense.modality || 'Online';
+    const resolvedVenue = venue ?? defense.venue ?? null;
+    const resolvedLocation = location ?? defense.location ?? null;
     const conflicts = await getCoordinatorApprovalConflicts({
       defenseId,
       projectId: defense.project_id,
@@ -873,20 +902,27 @@ async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule
     } else {
       // No conflict and no special handling - schedule immediately
       const scheduleMoved = verifiedSchedule && verifiedSchedule !== defense.scheduled_at?.toISOString?.();
-      newStatus = scheduleMoved ? 'moved' : 'scheduled';
+      const activeStatuses = ['scheduled', 'moved', 'approved'];
+      if (activeStatuses.includes(defense.status)) {
+        newStatus = scheduleMoved ? 'moved' : defense.status;
+      } else {
+        newStatus = scheduleMoved ? 'moved' : 'scheduled';
+      }
       notifType = scheduleMoved ? 'defense_moved' : 'defense_approved';
     }
 
     const jitsi = createJitsiMeetingFields({
       prefix: JITSI_DEFENSE_PREFIX,
       recordId: defenseId,
-      modality: defense.modality || 'Online',
+      modality: resolvedModality,
     });
 
     // Update defense schedule and status without requiring verification columns.
     await conn.execute(
       `UPDATE defenses
-       SET venue = COALESCE(?, venue),
+       SET venue = ?,
+           location = ?,
+           modality = ?,
            scheduled_at = ?,
            end_time = ?,
            verified_schedule = ?,
@@ -896,7 +932,9 @@ async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule
            meeting_provider = ?
        WHERE id = ?`,
       [
-        venue || null,
+        resolvedVenue,
+        resolvedLocation,
+        resolvedModality,
         proposedStart,
         proposedEnd,
         proposedStart,
@@ -918,7 +956,7 @@ async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule
         defense.scheduled_at,
         proposedStart,
         defense.venue || defense.location,
-        venue || defense.venue || defense.location,
+        resolvedVenue || resolvedLocation,
         notes || null,
       ]
     );
@@ -929,17 +967,16 @@ async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule
     const finalSchedule = proposedStart;
     const dateStr = new Date(finalSchedule).toLocaleDateString();
     const timeStr = new Date(finalSchedule).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const modality = defense.modality || 'Online';
 
     let notifTitle = 'Defense Approved';
-    let notifMessage = `The ${defense.defense_type} defense for "${defense.project_title}" has been approved for ${dateStr} at ${timeStr} (${modality}).`;
+    let notifMessage = `The ${defense.defense_type} defense for "${defense.project_title}" has been approved for ${dateStr} at ${timeStr} (${resolvedModality}).`;
 
     if (holdDefense) {
       notifTitle = 'Defense Held in Queue';
-      notifMessage = `The ${defense.defense_type} defense for "${defense.project_title}" has been queued and will be scheduled when time slots become available. Proposed schedule: ${dateStr} at ${timeStr} (${modality}).`;
+      notifMessage = `The ${defense.defense_type} defense for "${defense.project_title}" has been queued and will be scheduled when time slots become available. Proposed schedule: ${dateStr} at ${timeStr} (${resolvedModality}).`;
     } else if (forceApprove && conflicts.length) {
       notifTitle = 'Defense Confirmed Despite Conflicts';
-      notifMessage = `The ${defense.defense_type} defense for "${defense.project_title}" has been confirmed for ${dateStr} at ${timeStr} (${modality}).`;
+      notifMessage = `The ${defense.defense_type} defense for "${defense.project_title}" has been confirmed for ${dateStr} at ${timeStr} (${resolvedModality}).`;
     }
 
     const notifMessageWithLink = appendMeetingLinkToMessage(notifMessage, jitsi.meeting_url);
@@ -954,7 +991,7 @@ async function verifyDefense(defenseId, coordinatorId, { venue, verifiedSchedule
           defenseId,
           projectId: defense.project_id,
           schedule: finalSchedule,
-          modality,
+          modality: resolvedModality,
           meetingUrl: jitsi.meeting_url,
           meetingRoom: jitsi.meeting_room,
         },
@@ -1040,46 +1077,126 @@ async function setDefenseVenue(defenseId, coordinatorId, venue) {
   return { data: { success: true } };
 }
 
-async function deleteDefense(defenseId, institutionId) {
-  // Verify the defense belongs to a project in this institution
+const DEFENSE_UNDO_REVERT_STATUSES = ['scheduled', 'moved', 'approved'];
+
+async function getCoordinatorDefenseById(defenseId, institutionId) {
   const { rows } = await db.query(
     `SELECT d.id, d.status
      FROM defenses d
      JOIN projects p ON p.id = d.project_id
      LEFT JOIN courses c ON p.course_id = c.id
-     WHERE d.id = ? AND (p.institution_id = ? OR c.institution_id = ?)
+     WHERE d.id = ? AND ${coordinatorProjectScopeSql('p', 'c')}
      LIMIT 1`,
-    [defenseId, institutionId, institutionId]
+    [defenseId, ...coordinatorProjectScopeBinds(institutionId)]
   );
+  return rows[0] || null;
+}
 
-  if (!rows[0]) {
+async function cancelCoordinatorDefense(defenseId, institutionId) {
+  const defense = await getCoordinatorDefenseById(defenseId, institutionId);
+  if (!defense) {
     return { error: 'Defense not found', status: 404 };
   }
+  if (defense.status === 'cancelled') {
+    return { data: { success: true, previousStatus: defense.status } };
+  }
+  if (defense.status === 'completed') {
+    return { error: 'Cannot cancel a completed defense', status: 409 };
+  }
+  if (defense.status === 'pending') {
+    return { error: 'Reject pending defenses instead of cancelling', status: 409 };
+  }
+  if (defense.status === 'rejected') {
+    return { error: 'Defense is already rejected', status: 409 };
+  }
 
-  await db.query('DELETE FROM defenses WHERE id = ?', [defenseId]);
+  const previousStatus = defense.status;
+  await db.query(`UPDATE defenses SET status = 'cancelled' WHERE id = ?`, [defenseId]);
+  return { data: { success: true, previousStatus } };
+}
 
-  return { data: { success: true } };
+async function completeCoordinatorDefense(defenseId, institutionId) {
+  const defense = await getCoordinatorDefenseById(defenseId, institutionId);
+  if (!defense) {
+    return { error: 'Defense not found', status: 404 };
+  }
+  if (defense.status === 'completed') {
+    return { data: { success: true, previousStatus: defense.status } };
+  }
+  if (defense.status === 'cancelled') {
+    return { error: 'Cannot complete a cancelled defense', status: 409 };
+  }
+  if (defense.status === 'pending') {
+    return { error: 'Approve or reject pending defenses first', status: 409 };
+  }
+  if (defense.status === 'rejected') {
+    return { error: 'Cannot complete a rejected defense', status: 409 };
+  }
+
+  const previousStatus = defense.status;
+  await db.query(`UPDATE defenses SET status = 'completed' WHERE id = ?`, [defenseId]);
+  return { data: { success: true, previousStatus } };
+}
+
+async function revertCoordinatorDefense(defenseId, institutionId, previousStatus) {
+  const defense = await getCoordinatorDefenseById(defenseId, institutionId);
+  if (!defense) {
+    return { error: 'Defense not found', status: 404 };
+  }
+  if (defense.status !== 'cancelled' && defense.status !== 'completed') {
+    return { error: 'Only cancelled or completed defenses can be reverted', status: 409 };
+  }
+
+  const restoreStatus = DEFENSE_UNDO_REVERT_STATUSES.includes(previousStatus)
+    ? previousStatus
+    : 'scheduled';
+
+  await db.query(`UPDATE defenses SET status = ? WHERE id = ?`, [restoreStatus, defenseId]);
+  return { data: { success: true, status: restoreStatus } };
+}
+
+/** @deprecated Use cancelCoordinatorDefense — kept as alias for existing DELETE route */
+async function deleteDefense(defenseId, institutionId) {
+  return cancelCoordinatorDefense(defenseId, institutionId);
 }
 
 // ─── Dashboard Stats ────────────────────────────────────────────────────────
 
+/**
+ * Distinct projects with at least one accepted adviser from course_advisers.
+ * Shared projects (multiple advisers) are counted once.
+ */
+async function countProjectsUnderCourseAdvisers(institutionId) {
+  const { rows } = await db.query(
+    `SELECT COUNT(DISTINCT pm.project_id) AS count
+     FROM course_advisers ca
+     INNER JOIN courses c ON c.id = ca.course_id AND c.institution_id = ?
+     INNER JOIN project_members pm
+       ON pm.user_id = ca.user_id
+      AND pm.role = 'adviser'
+      AND pm.status = 'accepted'`,
+    [institutionId],
+  );
+  return Number(rows[0]?.count || 0);
+}
+
 async function getCoordinatorStats(institutionId) {
-  const [projectsResult, advisersResult, defensesResult, coursesResult] = await Promise.all([
+  const [projectsCount, advisersResult, defensesResult, coursesResult] = await Promise.all([
+    countProjectsUnderCourseAdvisers(institutionId),
     db.query(
-      'SELECT COUNT(*) AS count FROM projects WHERE institution_id = ?',
-      [institutionId]
-    ),
-    db.query(
-      `SELECT COUNT(*) AS count FROM user_roles WHERE institution_id = ? AND role = 'adviser'`,
-      [institutionId]
+      `SELECT COUNT(DISTINCT ca.user_id) AS count
+       FROM course_advisers ca
+       INNER JOIN courses c ON c.id = ca.course_id
+       WHERE c.institution_id = ?`,
+      [institutionId],
     ),
     db.query(
       `SELECT COUNT(*) AS count FROM defenses d
        INNER JOIN projects p ON d.project_id = p.id
        LEFT JOIN courses c ON p.course_id = c.id
-       WHERE (p.institution_id = ? OR c.institution_id = ?)
+       WHERE ${coordinatorProjectScopeSql('p', 'c')}
          AND d.status = 'pending'`,
-      [institutionId, institutionId]
+      coordinatorProjectScopeBinds(institutionId)
     ),
     db.query(
       'SELECT COUNT(*) AS count FROM courses WHERE institution_id = ?',
@@ -1088,7 +1205,7 @@ async function getCoordinatorStats(institutionId) {
   ]);
 
   return {
-    totalProjects: projectsResult.rows[0]?.count || 0,
+    totalProjects: projectsCount,
     totalAdvisers: advisersResult.rows[0]?.count || 0,
     pendingDefenses: defensesResult.rows[0]?.count || 0,
     totalCourses: coursesResult.rows[0]?.count || 0,
@@ -1739,9 +1856,9 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
     `SELECT p.id, p.title, p.project_code
      FROM projects p
      LEFT JOIN courses c ON p.course_id = c.id
-     WHERE p.id = ? AND (p.institution_id = ? OR c.institution_id = ?)
+     WHERE p.id = ? AND ${coordinatorProjectScopeSql('p', 'c')}
      LIMIT 1`,
-    [resolvedProjectId, institutionId, institutionId]
+    [resolvedProjectId, ...coordinatorProjectScopeBinds(institutionId)]
   );
 
   const project = projectRows[0];
@@ -1875,15 +1992,20 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
 
 async function getProjectsByInstitution(institutionId) {
   const { rows } = await db.query(
-    `SELECT
+    `SELECT DISTINCT
        p.id, p.title, p.project_code, p.status, p.project_type, p.created_at, p.updated_at,
-       p.course_id,
+       p.course_id, p.course AS course_label,
        c.course_name, c.code AS course_code
      FROM projects p
-     LEFT JOIN courses c ON p.course_id = c.id
-     WHERE (p.institution_id = ? OR c.institution_id = ?)
+     INNER JOIN project_members pm
+       ON pm.project_id = p.id
+      AND pm.role = 'adviser'
+      AND pm.status = 'accepted'
+     INNER JOIN course_advisers ca ON ca.user_id = pm.user_id
+     INNER JOIN courses inst_c ON inst_c.id = ca.course_id AND inst_c.institution_id = ?
+     LEFT JOIN courses c ON c.id = p.course_id
      ORDER BY p.created_at DESC`,
-    [institutionId, institutionId]
+    [institutionId],
   );
   return rows;
 }
@@ -1894,13 +2016,14 @@ async function getProjectsByAdviserInInstitution(institutionId) {
        u.id AS adviser_id, u.full_name AS adviser_name, u.email AS adviser_email, u.avatar_url AS adviser_avatar,
        p.id AS project_id, p.title AS project_title, p.project_code, p.status AS project_status,
        p.project_type, p.created_at AS project_created_at
-     FROM user_roles ur
-     INNER JOIN users u ON u.id = ur.user_id
-     LEFT JOIN project_members pm ON pm.user_id = u.id AND pm.role = 'adviser'
+     FROM course_advisers ca
+     INNER JOIN courses c ON c.id = ca.course_id AND c.institution_id = ?
+     INNER JOIN users u ON u.id = ca.user_id
+     LEFT JOIN project_members pm
+       ON pm.user_id = u.id AND pm.role = 'adviser' AND pm.status = 'accepted'
      LEFT JOIN projects p ON p.id = pm.project_id
-     WHERE ur.institution_id = ? AND ur.role = 'adviser'
      ORDER BY u.full_name ASC, p.title ASC`,
-    [institutionId]
+    [institutionId],
   );
 
   const adviserMap = new Map();
@@ -1915,14 +2038,17 @@ async function getProjectsByAdviserInInstitution(institutionId) {
       });
     }
     if (row.project_id) {
-      adviserMap.get(row.adviser_id).projects.push({
-        id: row.project_id,
-        title: row.project_title,
-        project_code: row.project_code,
-        status: row.project_status,
-        project_type: row.project_type,
-        created_at: row.project_created_at,
-      });
+      const adviserEntry = adviserMap.get(row.adviser_id);
+      if (!adviserEntry.projects.some((proj) => proj.id === row.project_id)) {
+        adviserEntry.projects.push({
+          id: row.project_id,
+          title: row.project_title,
+          project_code: row.project_code,
+          status: row.project_status,
+          project_type: row.project_type,
+          created_at: row.project_created_at,
+        });
+      }
     }
   }
 
@@ -1948,6 +2074,9 @@ module.exports = {
   rejectDefense,
   setDefenseVenue,
   deleteDefense,
+  cancelCoordinatorDefense,
+  completeCoordinatorDefense,
+  revertCoordinatorDefense,
   getCoordinatorStats,
   createDefenseForCourse,
   createCoordinatorDefenseBooking,
