@@ -9,6 +9,11 @@ async function getNextVersionNumber(projectId) {
   return (rows[0]?.max_v ?? 0) + 1;
 }
 
+/** Bump project.updated_at (timeline "Last updated" on project detail pages). */
+async function touchProjectUpdatedAt(projectId) {
+  await db.query('UPDATE projects SET updated_at = NOW() WHERE id = ?', [projectId]);
+}
+
 /** Insert a new paper version row. */
 async function createPaperVersion({ projectId, fileUrl, fileName, fileSize, mimeType, commitMessage, tag, uploadedBy, isGenerated }) {
   const versionNumber = await getNextVersionNumber(projectId);
@@ -31,6 +36,8 @@ async function createPaperVersion({ projectId, fileUrl, fileName, fileSize, mime
       isGenerated ? 1 : 0,
     ],
   );
+
+  await touchProjectUpdatedAt(projectId);
 
   return versionNumber;
 }
