@@ -1,6 +1,14 @@
 export type ProjectTypeEnum = 'thesis' | 'capstone' | 'dissertation';
 export type PaperStandardEnum = 'ieee' | 'apa' | 'mla' | 'chicago';
-export type ProjectStatusEnum = 'draft' | 'active' | 'completed' | 'archived';
+export type ProjectStatusEnum =
+  | 'topic_proposal'
+  | 'approved'
+  | 'ongoing'
+  | 'for_pre_defense'
+  | 'for_final_defense'
+  | 'completed'
+  | 'for_publication'
+  | 'rejected';
 
 export interface Project {
   id: string;
