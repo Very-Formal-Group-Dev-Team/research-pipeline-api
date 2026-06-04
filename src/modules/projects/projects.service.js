@@ -47,7 +47,7 @@ async function createProject({
 
     const [result] = await conn.execute(
       `INSERT INTO projects (title, description, abstract, keywords, paper_standard, program, course, section, document_reference, created_by, institution_id, status, project_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'topic_proposal', ?)`,
       [
         title,
         abstract,
@@ -623,10 +623,10 @@ async function getAdviserDashboardStats(adviserUserId) {
   let activeProjects = 0;
   let completedProjects = 0;
   for (const project of advisedProjects) {
-    const status = String(project.status || 'draft').toLowerCase();
-    if (status === 'completed' || status === 'archived') {
+    const status = String(project.status || 'topic_proposal').toLowerCase();
+    if (status === 'completed' || status === 'for_publication' || status === 'archived') {
       completedProjects += 1;
-    } else {
+    } else if (status !== 'rejected') {
       activeProjects += 1;
     }
   }
@@ -648,26 +648,79 @@ async function getAdviserDashboardStats(adviserUserId) {
   };
 }
 
-const ALLOWED_STATUSES = new Set(['draft', 'active', 'completed', 'archived']);
+const ALLOWED_STATUSES = new Set([
+  'topic_proposal',
+  'approved',
+  'ongoing',
+  'for_pre_defense',
+  'for_final_defense',
+  'completed',
+  'for_publication',
+  'rejected',
+]);
+
+async function isProjectAdviser(projectId, userId) {
+  const { rows } = await db.query(
+    `SELECT id FROM project_members
+     WHERE project_id = ? AND user_id = ? AND role = 'adviser' AND status = 'accepted'
+     LIMIT 1`,
+    [projectId, userId],
+  );
+  return rows.length > 0;
+}
 
 async function updateProjectStatus(projectId, status, userId) {
-  if (!ALLOWED_STATUSES.has(status)) {
-    return { error: 'Invalid status. Allowed: draft, active, completed, archived' };
+  const normalized = String(status || '').trim().toLowerCase();
+  const mapped =
+    normalized === 'draft'
+      ? 'topic_proposal'
+      : normalized === 'active'
+        ? 'ongoing'
+        : normalized === 'archived'
+          ? 'completed'
+          : normalized;
+
+  if (!ALLOWED_STATUSES.has(mapped)) {
+    return {
+      error:
+        'Invalid stage. Allowed: topic_proposal, approved, ongoing, for_pre_defense, for_final_defense, completed, for_publication, rejected',
+    };
   }
 
-  // Verify user is adviser of this project
-  const isMember = await isProjectMember(projectId, userId);
-  if (!isMember) {
-    return { error: 'You are not a member of this project' };
+  const isAdviser = await isProjectAdviser(projectId, userId);
+  if (!isAdviser) {
+    return { error: 'Only the project adviser can update research stage' };
+  }
+
+  const project = await getProjectById(projectId);
+  if (!project) {
+    return { error: 'Project not found' };
+  }
+
+  if (mapped === 'rejected') {
+    const current = String(project.status || 'topic_proposal').trim().toLowerCase();
+    const currentMapped =
+      current === 'draft'
+        ? 'topic_proposal'
+        : current === 'active'
+          ? 'ongoing'
+          : current === 'archived'
+            ? 'completed'
+            : current;
+    if (currentMapped !== 'topic_proposal') {
+      return {
+        error: 'Only projects in the Topic Proposal stage can be rejected',
+      };
+    }
   }
 
   await db.query(
     'UPDATE projects SET status = ?, updated_at = NOW() WHERE id = ?',
-    [status, projectId]
+    [mapped, projectId]
   );
 
-  const project = await getProjectById(projectId);
-  return { data: project };
+  const updated = await getProjectById(projectId);
+  return { data: updated };
 }
 
 const ALLOWED_PAPER_STANDARDS = ['ieee', 'apa', 'mla', 'chicago', 'imrad', 'custom'];

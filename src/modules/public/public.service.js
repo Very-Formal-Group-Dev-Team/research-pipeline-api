@@ -14,7 +14,7 @@ async function getPublicStats() {
   const finishedRes = await db.query(
     `SELECT COUNT(*) AS count
      FROM projects
-     WHERE LOWER(COALESCE(status, '')) IN ('completed', 'archived')`,
+     WHERE LOWER(COALESCE(status, '')) IN ('completed', 'for_publication', 'archived')`,
   );
 
   return {
