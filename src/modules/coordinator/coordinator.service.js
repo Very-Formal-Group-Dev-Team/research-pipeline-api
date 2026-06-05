@@ -228,6 +228,12 @@ function normalizePanelistIds(payload) {
   return Array.from(new Set(raw.map(String).filter(Boolean)));
 }
 
+function normalizeProjectIds(payload) {
+  const raw = payload?.projectIds ?? payload?.project_ids ?? [];
+  if (!Array.isArray(raw)) return [];
+  return Array.from(new Set(raw.map(String).filter(Boolean)));
+}
+
 async function validateInstitutionPanelists(institutionId, panelistIds, queryRunner = db) {
   if (!panelistIds.length) return { data: [] };
 
@@ -1767,6 +1773,7 @@ async function createCoordinatorDefenseBookingForCourse(institutionId, coordinat
   const resolvedRubricId = rubricId || rubric_id || null;
   const resolvedDefenseType = defenseType || defense_type;
   const panelistIds = normalizePanelistIds(payload);
+  const projectIds = normalizeProjectIds(payload);
   const startInput = scheduledAt || start_time || (date && startTime ? `${date}T${startTime}` : null);
   const endInput = end_time || (date && endTime ? `${date}T${endTime}` : null);
   const scheduleWindow = getScheduleWindow({ start_time: startInput, end_time: endInput });
@@ -1802,7 +1809,15 @@ async function createCoordinatorDefenseBookingForCourse(institutionId, coordinat
     }
   }
 
-  const projectRows = await getProjectsForCourseInInstitution(institutionId, resolvedCourseId);
+  let projectRows = await getProjectsForCourseInInstitution(institutionId, resolvedCourseId);
+
+  if (projectIds.length) {
+    const allowedProjectIds = new Set(projectIds);
+    projectRows = projectRows.filter((project) => allowedProjectIds.has(project.id));
+    if (!projectRows.length) {
+      return { error: 'No valid groups selected for this course.', status: 400 };
+    }
+  }
 
   if (!projectRows.length) {
     return { error: 'No projects found for this course.', status: 400 };
@@ -2164,9 +2179,8 @@ async function getProjectsByInstitution(institutionId) {
        ON pm.project_id = p.id
       AND pm.role = 'adviser'
       AND pm.status = 'accepted'
-     INNER JOIN course_advisers ca ON ca.user_id = pm.user_id
-     INNER JOIN courses inst_c ON inst_c.id = ca.course_id AND inst_c.institution_id = ?
      LEFT JOIN courses c ON c.id = p.course_id
+     WHERE p.institution_id = ?
      ORDER BY p.created_at DESC`,
     [institutionId],
   );
@@ -2179,14 +2193,28 @@ async function getProjectsByAdviserInInstitution(institutionId) {
        u.id AS adviser_id, u.full_name AS adviser_name, u.email AS adviser_email, u.avatar_url AS adviser_avatar,
        p.id AS project_id, p.title AS project_title, p.project_code, p.status AS project_status,
        p.project_type, p.created_at AS project_created_at
-     FROM course_advisers ca
-     INNER JOIN courses c ON c.id = ca.course_id AND c.institution_id = ?
-     INNER JOIN users u ON u.id = ca.user_id
+     FROM users u
+     INNER JOIN (
+       SELECT ca.user_id
+       FROM course_advisers ca
+       INNER JOIN courses c ON c.id = ca.course_id AND c.institution_id = ?
+       UNION
+       SELECT pm.user_id
+       FROM project_members pm
+       INNER JOIN projects proj ON proj.id = pm.project_id
+       WHERE pm.role = 'adviser'
+         AND pm.status = 'accepted'
+         AND proj.institution_id = ?
+     ) scoped_advisers ON scoped_advisers.user_id = u.id
      LEFT JOIN project_members pm
-       ON pm.user_id = u.id AND pm.role = 'adviser' AND pm.status = 'accepted'
-     LEFT JOIN projects p ON p.id = pm.project_id
+       ON pm.user_id = u.id
+      AND pm.role = 'adviser'
+      AND pm.status = 'accepted'
+     LEFT JOIN projects p
+       ON p.id = pm.project_id
+      AND p.institution_id = ?
      ORDER BY u.full_name ASC, p.title ASC`,
-    [institutionId],
+    [institutionId, institutionId, institutionId],
   );
 
   const adviserMap = new Map();
@@ -2251,4 +2279,5 @@ module.exports = {
   deleteCoordinatorRubric,
   getProjectsByInstitution,
   getProjectsByAdviserInInstitution,
+  getProjectsForCourseInInstitution,
 };

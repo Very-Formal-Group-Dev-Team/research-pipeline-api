@@ -27,6 +27,7 @@ async function createProject({
   projectType,
   program,
   course,
+  courseId,
   section,
   documentReference,
   createdBy,
@@ -41,13 +42,28 @@ async function createProject({
     );
     const institutionId = roleRows[0]?.institution_id || null;
 
+    let resolvedCourseId = courseId || null;
+    let resolvedCourseName = course || null;
+
+    if (resolvedCourseId && institutionId) {
+      const institutionsService = require('../institutions/institutions.service');
+      const courseRow = await institutionsService.getCourseForInstitution(
+        institutionId,
+        resolvedCourseId,
+      );
+      if (!courseRow) {
+        throw new Error('Selected course is not available in your institution');
+      }
+      resolvedCourseName = courseRow.course_name;
+    }
+
     const normalizedProjectType = String(projectType || 'thesis').trim().toLowerCase();
     const safeProjectType =
       normalizedProjectType === 'capstone' ? 'capstone' : 'thesis';
 
     const [result] = await conn.execute(
-      `INSERT INTO projects (title, description, abstract, keywords, paper_standard, program, course, section, document_reference, created_by, institution_id, status, project_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'topic_proposal', ?)`,
+      `INSERT INTO projects (title, description, abstract, keywords, paper_standard, program, course, course_id, section, document_reference, created_by, institution_id, status, project_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'topic_proposal', ?)`,
       [
         title,
         abstract,
@@ -55,7 +71,8 @@ async function createProject({
         JSON.stringify(keywords || []),
         (researchType || 'ieee').toLowerCase(),
         program || null,
-        course || null,
+        resolvedCourseName,
+        resolvedCourseId,
         section || null,
         documentReference || null,
         createdBy,
@@ -808,8 +825,34 @@ async function updateProjectDetails(projectId, details) {
     paperStandard,
     program,
     course,
+    courseId,
     section,
   } = details;
+
+  let resolvedCourseId = courseId || null;
+  let resolvedCourseName = course || null;
+
+  if (resolvedCourseId) {
+    const { rows: projectRows } = await db.query(
+      'SELECT institution_id FROM projects WHERE id = ? LIMIT 1',
+      [projectId],
+    );
+    const institutionId = projectRows[0]?.institution_id || null;
+
+    if (institutionId) {
+      const institutionsService = require('../institutions/institutions.service');
+      const courseRow = await institutionsService.getCourseForInstitution(
+        institutionId,
+        resolvedCourseId,
+      );
+      if (!courseRow) {
+        throw new Error('Selected course is not available in your institution');
+      }
+      resolvedCourseName = courseRow.course_name;
+    } else {
+      resolvedCourseId = null;
+    }
+  }
 
   await db.query(
     `UPDATE projects
@@ -818,6 +861,7 @@ async function updateProjectDetails(projectId, details) {
          paper_standard = ?,
          program = ?,
          course = ?,
+         course_id = ?,
          section = ?,
          updated_at = NOW()
      WHERE id = ?`,
@@ -826,7 +870,8 @@ async function updateProjectDetails(projectId, details) {
       projectType,
       paperStandard,
       program,
-      course,
+      resolvedCourseName,
+      resolvedCourseId,
       section,
       projectId,
     ],

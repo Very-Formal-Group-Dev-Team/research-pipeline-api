@@ -27,6 +27,7 @@ router.delete('/institution/advisers/:adviserId', asyncHandler(controller.remove
 
 // Course management
 router.get('/courses', asyncHandler(controller.listCourses));
+router.get('/courses/:courseId/groups', asyncHandler(controller.getCourseGroups));
 router.post('/courses', asyncHandler(controller.createCourse));
 router.put('/courses/:courseId', asyncHandler(controller.updateCourse));
 router.delete('/courses/:courseId', asyncHandler(controller.deleteCourse));
