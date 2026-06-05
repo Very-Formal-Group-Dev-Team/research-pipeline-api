@@ -29,6 +29,11 @@ async function getAdvisers(req, res) {
   return res.json(advisers);
 }
 
+async function getPanelists(req, res) {
+  const panelists = await coordinatorService.getPanelistsInInstitution(req.institution.id);
+  return res.json(panelists);
+}
+
 async function addAdviser(req, res) {
   const { adviserId, courseId } = req.body;
   if (!adviserId || !courseId) {
@@ -313,6 +318,7 @@ module.exports = {
   getDashboard,
   getInstitution,
   getAdvisers,
+  getPanelists,
   addAdviser,
   removeAdviser,
   removeAdviserFromCourse,
