@@ -659,6 +659,72 @@ const ALLOWED_STATUSES = new Set([
   'rejected',
 ]);
 
+const PROJECT_STAGE_LABELS = {
+  topic_proposal: 'Topic Proposal',
+  approved: 'Approved',
+  ongoing: 'Ongoing',
+  for_pre_defense: 'For Pre-Defense',
+  for_final_defense: 'For Final Defense',
+  completed: 'Completed',
+  for_publication: 'For Publication',
+  rejected: 'Rejected',
+};
+
+function normalizeProjectStatus(status) {
+  const current = String(status || 'topic_proposal').trim().toLowerCase();
+  if (current === 'draft') return 'topic_proposal';
+  if (current === 'active') return 'ongoing';
+  if (current === 'archived') return 'completed';
+  return current;
+}
+
+function formatProjectStageLabel(stage) {
+  return PROJECT_STAGE_LABELS[stage] || stage;
+}
+
+async function notifyProjectMembersStageUpdated({
+  projectId,
+  newStage,
+  previousStage,
+  triggeredByUserId,
+}) {
+  const { rows } = await db.query(
+    `SELECT pm.user_id, p.title, adviser.full_name AS adviser_name
+     FROM project_members pm
+     JOIN projects p ON p.id = pm.project_id
+     LEFT JOIN users adviser ON adviser.id = ?
+     WHERE pm.project_id = ? AND pm.status = 'accepted'`,
+    [triggeredByUserId, projectId],
+  );
+
+  const recipients = rows
+    .map((row) => row.user_id)
+    .filter((userId) => userId && userId !== triggeredByUserId);
+
+  if (!recipients.length) {
+    return;
+  }
+
+  const projectTitle = rows[0]?.title || 'your project';
+  const adviserName = rows[0]?.adviser_name || 'Your adviser';
+
+  await Promise.all(
+    recipients.map((userId) =>
+      notificationsService.upsertUnreadProjectStageNotification({
+        userId,
+        projectId,
+        title: 'Research stage updated',
+        adviserName,
+        projectTitle,
+        newStage,
+        previousStage,
+        updatedByUserId: triggeredByUserId,
+        formatStageLabel: formatProjectStageLabel,
+      }),
+    ),
+  );
+}
+
 async function isProjectAdviser(projectId, userId) {
   const { rows } = await db.query(
     `SELECT id FROM project_members
@@ -697,27 +763,27 @@ async function updateProjectStatus(projectId, status, userId) {
     return { error: 'Project not found' };
   }
 
-  if (mapped === 'rejected') {
-    const current = String(project.status || 'topic_proposal').trim().toLowerCase();
-    const currentMapped =
-      current === 'draft'
-        ? 'topic_proposal'
-        : current === 'active'
-          ? 'ongoing'
-          : current === 'archived'
-            ? 'completed'
-            : current;
-    if (currentMapped !== 'topic_proposal') {
-      return {
-        error: 'Only projects in the Topic Proposal stage can be rejected',
-      };
-    }
+  const currentMapped = normalizeProjectStatus(project.status);
+
+  if (mapped === 'rejected' && currentMapped === 'rejected') {
+    return { error: 'Project is already rejected' };
+  }
+
+  if (currentMapped === mapped) {
+    return { data: project };
   }
 
   await db.query(
     'UPDATE projects SET status = ?, updated_at = NOW() WHERE id = ?',
     [mapped, projectId]
   );
+
+  await notifyProjectMembersStageUpdated({
+    projectId,
+    newStage: mapped,
+    previousStage: currentMapped,
+    triggeredByUserId: userId,
+  });
 
   const updated = await getProjectById(projectId);
   return { data: updated };
