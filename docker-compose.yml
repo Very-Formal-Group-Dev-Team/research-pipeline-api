@@ -46,12 +46,6 @@ services:
     networks:
       - backend
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\""]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
 
   # ──────────────────────────────────────────────
   # Node.js API  (service name = "app" so you can
@@ -84,7 +78,7 @@ services:
       db:
         condition: service_healthy
       keyword-model:
-        condition: service_healthy
+        condition: service_started
     networks:
       - backend
     restart: unless-stopped

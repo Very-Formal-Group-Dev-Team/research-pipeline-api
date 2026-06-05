@@ -7,6 +7,8 @@ const {
   getMyProjectDefenses,
   getProjectMeetings,
   getMeetingById,
+  getDefenseMeetingSessionHandler,
+  putDefensePanelEvaluations,
   patchUpdateMeeting,
   patchCompleteMeeting,
   patchRestoreMeeting,
@@ -29,6 +31,8 @@ router.post('/propose', asyncHandler(postDefenseProposal));
 router.get('/me', asyncHandler(getMyDefenses));
 router.get('/my-projects', asyncHandler(getMyProjectDefenses));
 router.get('/project/:projectId', asyncHandler(getProjectMeetings));
+router.get('/:id/meeting-session', asyncHandler(getDefenseMeetingSessionHandler));
+router.put('/:id/panel-evaluations', asyncHandler(putDefensePanelEvaluations));
 router.get('/:id', asyncHandler(getMeetingById));
 router.patch('/:id', asyncHandler(patchUpdateMeeting));
 router.patch('/:id/complete', asyncHandler(patchCompleteMeeting));
