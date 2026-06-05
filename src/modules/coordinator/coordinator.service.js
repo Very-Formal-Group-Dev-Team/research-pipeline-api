@@ -731,38 +731,15 @@ async function getCourseById(courseId) {
   return rows[0] || null;
 }
 
-/** Projects tied to a course by course_id or via course_advisers + accepted adviser membership. */
+/** Projects directly assigned to a course via projects.course_id (one course per project). */
 async function getProjectsForCourseInInstitution(institutionId, courseId) {
   const { rows } = await db.query(
-    `SELECT DISTINCT p.id, p.title, p.project_code
+    `SELECT p.id, p.title, p.project_code
      FROM projects p
-     LEFT JOIN courses pc ON pc.id = p.course_id
-     WHERE (
-       p.course_id = ?
-       OR EXISTS (
-         SELECT 1
-         FROM course_advisers ca
-         INNER JOIN project_members pm
-           ON pm.project_id = p.id
-          AND pm.user_id = ca.user_id
-          AND pm.role = 'adviser'
-          AND pm.status = 'accepted'
-         WHERE ca.course_id = ?
-       )
-     )
-     AND (
-       p.institution_id = ?
-       OR pc.institution_id = ?
-       OR EXISTS (
-         SELECT 1
-         FROM project_members pm2
-         INNER JOIN user_roles ur ON ur.user_id = pm2.user_id
-         WHERE pm2.project_id = p.id
-           AND ur.institution_id = ?
-       )
-     )
+     INNER JOIN courses c ON c.id = p.course_id AND c.institution_id = ?
+     WHERE p.course_id = ?
      ORDER BY p.title ASC`,
-    [courseId, courseId, institutionId, institutionId, institutionId]
+    [institutionId, courseId]
   );
   return rows;
 }
