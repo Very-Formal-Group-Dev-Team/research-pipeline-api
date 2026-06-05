@@ -274,12 +274,26 @@ async function assignDefensePanelists(conn, defenseId, panelistIds) {
   }
 }
 
+async function replaceDefensePanelists(conn, defenseId, panelistIds) {
+  await conn.execute('DELETE FROM defense_panelists WHERE defense_id = ?', [defenseId]);
+  if (panelistIds.length) {
+    await assignDefensePanelists(conn, defenseId, panelistIds);
+  }
+}
+
 const DEFENSE_PANELIST_NAMES_SQL = `(
   SELECT GROUP_CONCAT(u3.full_name ORDER BY u3.full_name SEPARATOR ', ')
   FROM defense_panelists dp
   INNER JOIN users u3 ON u3.id = dp.user_id
   WHERE dp.defense_id = d.id
 ) AS panelist_names`;
+
+const DEFENSE_PANELIST_IDS_SQL = `(
+  SELECT GROUP_CONCAT(dp.user_id ORDER BY u3.full_name SEPARATOR ',')
+  FROM defense_panelists dp
+  INNER JOIN users u3 ON u3.id = dp.user_id
+  WHERE dp.defense_id = d.id
+) AS panelist_ids`;
 
 async function getCoordinatorApprovalConflicts({
   defenseId = null,
@@ -851,12 +865,14 @@ async function getPendingDefenses(institutionId) {
   const scheduleExpr = await getDefenseScheduleExpr();
 
   const { rows } = await db.query(
-    `SELECT d.*, p.title AS project_title, p.project_code,
+    `SELECT d.*, p.title AS project_title, p.project_code, p.course_id,
+            c.course_name, c.code AS course_code,
             ${scheduleExpr} AS scheduled_at,
             ${scheduleExpr} AS start_time,
             COALESCE(d.end_time, ${scheduleExpr}) AS end_time,
             u.full_name AS created_by_name,
-            ${DEFENSE_PANELIST_NAMES_SQL}
+            ${DEFENSE_PANELIST_NAMES_SQL},
+            ${DEFENSE_PANELIST_IDS_SQL}
      FROM defenses d
      INNER JOIN projects p ON d.project_id = p.id
      LEFT JOIN courses c ON p.course_id = c.id
@@ -873,7 +889,8 @@ async function getAllDefensesForInstitution(institutionId) {
   const scheduleExpr = await getDefenseScheduleExpr();
 
   const { rows } = await db.query(
-    `SELECT d.*, p.title AS project_title, p.project_code,
+    `SELECT d.*, p.title AS project_title, p.project_code, p.course_id,
+            c.course_name, c.code AS course_code,
             ${scheduleExpr} AS scheduled_at,
             ${scheduleExpr} AS start_time,
             COALESCE(d.end_time, ${scheduleExpr}) AS end_time,
@@ -888,7 +905,8 @@ async function getAllDefensesForInstitution(institutionId) {
               ORDER BY pm2.invited_at ASC
               LIMIT 1
             ) AS adviser_name,
-            ${DEFENSE_PANELIST_NAMES_SQL}
+            ${DEFENSE_PANELIST_NAMES_SQL},
+            ${DEFENSE_PANELIST_IDS_SQL}
      FROM defenses d
      INNER JOIN projects p ON d.project_id = p.id
      LEFT JOIN courses c ON p.course_id = c.id
@@ -903,7 +921,22 @@ async function getAllDefensesForInstitution(institutionId) {
 async function verifyDefense(
   defenseId,
   coordinatorId,
-  { venue, location, modality, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense }
+  {
+    venue,
+    location,
+    modality,
+    verifiedSchedule,
+    verifiedEndTime,
+    notes,
+    forceApprove,
+    holdDefense,
+    defenseType,
+    defense_type,
+    rubricId,
+    rubric_id,
+    panelistIds,
+    panelist_ids,
+  }
 ) {
   const conn = await db.pool.getConnection();
   try {
@@ -911,9 +944,10 @@ async function verifyDefense(
 
     // Get current defense with project info
     const [defenseRows] = await conn.execute(
-      `SELECT d.*, p.title AS project_title
+      `SELECT d.*, p.title AS project_title, c.institution_id
        FROM defenses d
        LEFT JOIN projects p ON d.project_id = p.id
+       LEFT JOIN courses c ON p.course_id = c.id
        WHERE d.id = ? LIMIT 1`,
       [defenseId]
     );
@@ -933,6 +967,47 @@ async function verifyDefense(
       return { error: 'Invalid schedule range' };
     }
 
+    const resolvedDefenseType = defenseType || defense_type || defense.defense_type;
+    if (!['proposal', 'midterm', 'final'].includes(resolvedDefenseType)) {
+      await conn.rollback();
+      return { error: 'defenseType must be one of: proposal, midterm, final' };
+    }
+
+    const hasRubricUpdate = rubricId !== undefined || rubric_id !== undefined;
+    const resolvedRubricId = hasRubricUpdate ? (rubricId || rubric_id || null) : defense.rubric_id;
+
+    if (resolvedRubricId) {
+      const [rubricRows] = await conn.execute(
+        `SELECT r.id
+         FROM rubrics r
+         INNER JOIN user_roles ur ON ur.user_id = r.created_by
+         WHERE r.id = ? AND ur.institution_id = ?
+         LIMIT 1`,
+        [resolvedRubricId, defense.institution_id]
+      );
+      if (!rubricRows.length) {
+        await conn.rollback();
+        return { error: 'Rubric not found in your institution' };
+      }
+    }
+
+    const hasPanelistUpdate = panelistIds !== undefined || panelist_ids !== undefined;
+    const normalizedPanelistIds = hasPanelistUpdate
+      ? normalizePanelistIds({ panelistIds: panelistIds ?? panelist_ids })
+      : null;
+
+    if (normalizedPanelistIds !== null) {
+      const panelistValidation = await validateInstitutionPanelists(
+        defense.institution_id,
+        normalizedPanelistIds,
+        conn
+      );
+      if (panelistValidation.error) {
+        await conn.rollback();
+        return { error: panelistValidation.error, status: panelistValidation.status || 400 };
+      }
+    }
+
     const [memberRows] = await conn.execute(
       `SELECT user_id
        FROM project_members
@@ -941,6 +1016,19 @@ async function verifyDefense(
       [defense.project_id]
     );
 
+    let conflictMemberIds = memberRows.map((member) => member.user_id);
+    if (normalizedPanelistIds !== null) {
+      conflictMemberIds = Array.from(new Set([...conflictMemberIds, ...normalizedPanelistIds]));
+    } else {
+      const [panelistRows] = await conn.execute(
+        `SELECT user_id FROM defense_panelists WHERE defense_id = ?`,
+        [defenseId]
+      );
+      conflictMemberIds = Array.from(
+        new Set([...conflictMemberIds, ...panelistRows.map((row) => row.user_id)])
+      );
+    }
+
     const targetLocation = venue || location || defense.venue || defense.location || null;
     const resolvedModality = modality || defense.modality || 'Online';
     const resolvedVenue = venue ?? defense.venue ?? null;
@@ -948,7 +1036,7 @@ async function verifyDefense(
     const conflicts = await getCoordinatorApprovalConflicts({
       defenseId,
       projectId: defense.project_id,
-      memberIds: memberRows.map((member) => member.user_id),
+      memberIds: conflictMemberIds,
       location: targetLocation,
       startAt: proposedStart,
       endAt: proposedEnd,
@@ -996,6 +1084,8 @@ async function verifyDefense(
        SET venue = ?,
            location = ?,
            modality = ?,
+           defense_type = ?,
+           rubric_id = ?,
            scheduled_at = ?,
            end_time = ?,
            verified_schedule = ?,
@@ -1008,6 +1098,8 @@ async function verifyDefense(
         resolvedVenue,
         resolvedLocation,
         resolvedModality,
+        resolvedDefenseType,
+        resolvedRubricId,
         proposedStart,
         proposedEnd,
         proposedStart,
@@ -1018,6 +1110,10 @@ async function verifyDefense(
         defenseId,
       ]
     );
+
+    if (normalizedPanelistIds !== null) {
+      await replaceDefensePanelists(conn, defenseId, normalizedPanelistIds);
+    }
 
     // Create verification audit record
     await conn.execute(
@@ -1874,7 +1970,12 @@ async function createCoordinatorDefenseBookingForCourse(institutionId, coordinat
         await assignDefensePanelists(conn, defenseId, panelistIds);
       }
 
-      createdDefenses.push({ id: defenseId, project_title: project.title, project_code: project.project_code });
+      createdDefenses.push({
+        id: defenseId,
+        project_id: project.id,
+        project_title: project.title,
+        project_code: project.project_code,
+      });
       batchDefenseIds.push(defenseId);
 
       const defenseTypeLabel = `${resolvedDefenseType.charAt(0).toUpperCase() + resolvedDefenseType.slice(1)}`;
@@ -1923,7 +2024,13 @@ async function createCoordinatorDefenseBookingForCourse(institutionId, coordinat
     }
 
     await conn.commit();
-    return { data: createdDefenses[0] || { count: createdDefenses.length } };
+    const primary = createdDefenses[0] || { count: createdDefenses.length };
+    return {
+      data: {
+        ...primary,
+        booked_defenses: createdDefenses,
+      },
+    };
   } catch (err) {
     try { await conn.rollback(); } catch (_) { /* ignore */ }
     throw err;
