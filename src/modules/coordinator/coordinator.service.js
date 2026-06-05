@@ -222,6 +222,65 @@ function rangesOverlap(startA, endA, startB, endB) {
   return startA < endB && endA > startB;
 }
 
+function normalizePanelistIds(payload) {
+  const raw = payload?.panelistIds ?? payload?.panelist_ids ?? [];
+  if (!Array.isArray(raw)) return [];
+  return Array.from(new Set(raw.map(String).filter(Boolean)));
+}
+
+function normalizeProjectIds(payload) {
+  const raw = payload?.projectIds ?? payload?.project_ids ?? [];
+  if (!Array.isArray(raw)) return [];
+  return Array.from(new Set(raw.map(String).filter(Boolean)));
+}
+
+async function validateInstitutionPanelists(institutionId, panelistIds, queryRunner = db) {
+  if (!panelistIds.length) return { data: [] };
+
+  const placeholders = panelistIds.map(() => '?').join(', ');
+  const sql = `SELECT DISTINCT u.id, u.full_name
+               FROM users u
+               INNER JOIN user_roles ur ON ur.user_id = u.id
+               WHERE ur.institution_id = ?
+                 AND ur.role IN ('adviser', 'coordinator')
+                 AND u.id IN (${placeholders})`;
+  const params = [institutionId, ...panelistIds];
+
+  let rows;
+  if (typeof queryRunner.execute === 'function') {
+    [rows] = await queryRunner.execute(sql, params);
+  } else {
+    ({ rows } = await queryRunner.query(sql, params));
+  }
+
+  if (rows.length !== panelistIds.length) {
+    return {
+      error: 'One or more panelists are not advisers or coordinators in your institution',
+      status: 400,
+    };
+  }
+
+  return { data: rows };
+}
+
+async function assignDefensePanelists(conn, defenseId, panelistIds) {
+  for (const userId of panelistIds) {
+    await conn.execute(
+      `INSERT INTO defense_panelists (id, defense_id, user_id)
+       VALUES (UUID(), ?, ?)
+       ON DUPLICATE KEY UPDATE assigned_at = CURRENT_TIMESTAMP`,
+      [defenseId, userId]
+    );
+  }
+}
+
+const DEFENSE_PANELIST_NAMES_SQL = `(
+  SELECT GROUP_CONCAT(u3.full_name ORDER BY u3.full_name SEPARATOR ', ')
+  FROM defense_panelists dp
+  INNER JOIN users u3 ON u3.id = dp.user_id
+  WHERE dp.defense_id = d.id
+) AS panelist_names`;
+
 async function getCoordinatorApprovalConflicts({
   defenseId = null,
   projectId,
@@ -318,16 +377,35 @@ async function getCoordinatorApprovalConflicts({
               COALESCE(d.end_time, d.scheduled_at) AS end_time,
               d.status
        FROM defenses d
-       JOIN project_members pm
-         ON pm.project_id = d.project_id
-        AND pm.status = 'accepted'
        WHERE (? IS NULL OR d.id <> ?)
          AND ${participantExtras.sql}
          AND d.scheduled_at IS NOT NULL
-         AND pm.user_id IN (${memberPlaceholders})
+         AND (
+           EXISTS (
+             SELECT 1
+             FROM project_members pm
+             WHERE pm.project_id = d.project_id
+               AND pm.status = 'accepted'
+               AND pm.user_id IN (${memberPlaceholders})
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM defense_panelists dp
+             WHERE dp.defense_id = d.id
+               AND dp.user_id IN (${memberPlaceholders})
+           )
+         )
          AND d.scheduled_at < ?
          AND COALESCE(d.end_time, d.scheduled_at) > ?`,
-      [defenseId, defenseId, ...participantExtras.params, ...memberIds, endNorm.dbValue, startNorm.dbValue]
+      [
+        defenseId,
+        defenseId,
+        ...participantExtras.params,
+        ...memberIds,
+        ...memberIds,
+        endNorm.dbValue,
+        startNorm.dbValue,
+      ]
     );
 
     for (const row of participantRows) {
@@ -377,6 +455,22 @@ async function getAdvisersInInstitution(institutionId) {
      FROM users u
      INNER JOIN user_roles ur ON ur.user_id = u.id
      WHERE ur.institution_id = ? AND ur.role = 'adviser'
+     ORDER BY u.full_name ASC`,
+    [institutionId]
+  );
+  return rows;
+}
+
+async function getPanelistsInInstitution(institutionId) {
+  const { rows } = await db.query(
+    `SELECT u.id, u.email, u.full_name, u.avatar_url,
+            MIN(ur.role) AS role,
+            MIN(ur.created_at) AS role_assigned_at
+     FROM users u
+     INNER JOIN user_roles ur ON ur.user_id = u.id
+     WHERE ur.institution_id = ?
+       AND ur.role IN ('adviser', 'coordinator')
+     GROUP BY u.id, u.email, u.full_name, u.avatar_url
      ORDER BY u.full_name ASC`,
     [institutionId]
   );
@@ -784,7 +878,8 @@ async function getPendingDefenses(institutionId) {
             ${scheduleExpr} AS scheduled_at,
             ${scheduleExpr} AS start_time,
             COALESCE(d.end_time, ${scheduleExpr}) AS end_time,
-            u.full_name AS created_by_name
+            u.full_name AS created_by_name,
+            ${DEFENSE_PANELIST_NAMES_SQL}
      FROM defenses d
      INNER JOIN projects p ON d.project_id = p.id
      LEFT JOIN courses c ON p.course_id = c.id
@@ -815,7 +910,8 @@ async function getAllDefensesForInstitution(institutionId) {
                 AND pm2.status = 'accepted'
               ORDER BY pm2.invited_at ASC
               LIMIT 1
-            ) AS adviser_name
+            ) AS adviser_name,
+            ${DEFENSE_PANELIST_NAMES_SQL}
      FROM defenses d
      INNER JOIN projects p ON d.project_id = p.id
      LEFT JOIN courses c ON p.course_id = c.id
@@ -1676,6 +1772,8 @@ async function createCoordinatorDefenseBookingForCourse(institutionId, coordinat
   const resolvedCourseId = courseId || course_id;
   const resolvedRubricId = rubricId || rubric_id || null;
   const resolvedDefenseType = defenseType || defense_type;
+  const panelistIds = normalizePanelistIds(payload);
+  const projectIds = normalizeProjectIds(payload);
   const startInput = scheduledAt || start_time || (date && startTime ? `${date}T${startTime}` : null);
   const endInput = end_time || (date && endTime ? `${date}T${endTime}` : null);
   const scheduleWindow = getScheduleWindow({ start_time: startInput, end_time: endInput });
@@ -1686,6 +1784,11 @@ async function createCoordinatorDefenseBookingForCourse(institutionId, coordinat
   }
   if (scheduleWindow.error) return { error: scheduleWindow.error, status: 400 };
   if (!location) return { error: 'location is required', status: 400 };
+
+  const panelistValidation = await validateInstitutionPanelists(institutionId, panelistIds);
+  if (panelistValidation.error) {
+    return { error: panelistValidation.error, status: panelistValidation.status || 400 };
+  }
 
   const course = await getCourseById(resolvedCourseId);
   if (!course || course.institution_id !== institutionId) {
@@ -1706,7 +1809,15 @@ async function createCoordinatorDefenseBookingForCourse(institutionId, coordinat
     }
   }
 
-  const projectRows = await getProjectsForCourseInInstitution(institutionId, resolvedCourseId);
+  let projectRows = await getProjectsForCourseInInstitution(institutionId, resolvedCourseId);
+
+  if (projectIds.length) {
+    const allowedProjectIds = new Set(projectIds);
+    projectRows = projectRows.filter((project) => allowedProjectIds.has(project.id));
+    if (!projectRows.length) {
+      return { error: 'No valid groups selected for this course.', status: 400 };
+    }
+  }
 
   if (!projectRows.length) {
     return { error: 'No projects found for this course.', status: 400 };
@@ -1728,10 +1839,13 @@ async function createCoordinatorDefenseBookingForCourse(institutionId, coordinat
         [project.id]
       );
 
+      const participantIds = Array.from(
+        new Set([...memberRows.map((m) => m.user_id), ...panelistIds])
+      );
       const conflicts = await getCoordinatorApprovalConflicts({
         defenseId: null,
         projectId: project.id,
-        memberIds: memberRows.map((m) => m.user_id),
+        memberIds: participantIds,
         location: venue || location,
         startAt: normalizedStart.dbValue,
         endAt: normalizedEnd.dbValue,
@@ -1779,22 +1893,50 @@ async function createCoordinatorDefenseBookingForCourse(institutionId, coordinat
         ]
       );
 
+      if (panelistIds.length) {
+        await assignDefensePanelists(conn, defenseId, panelistIds);
+      }
+
       createdDefenses.push({ id: defenseId, project_title: project.title, project_code: project.project_code });
       batchDefenseIds.push(defenseId);
+
+      const defenseTypeLabel = `${resolvedDefenseType.charAt(0).toUpperCase() + resolvedDefenseType.slice(1)}`;
+      const scheduleMessage = appendMeetingLinkToMessage(
+        `The ${resolvedDefenseType} defense for "${project.title}" has been scheduled.`,
+        jitsi.meeting_url
+      );
 
       for (const member of memberRows) {
         await createNotification({
           userId: member.user_id,
           type: 'schedule',
-          title: `${resolvedDefenseType.charAt(0).toUpperCase() + resolvedDefenseType.slice(1)} Defense Scheduled`,
+          title: `${defenseTypeLabel} Defense Scheduled`,
+          message: scheduleMessage,
+          metadata: {
+            defenseId,
+            projectId: project.id,
+            courseId: resolvedCourseId,
+            meetingUrl: jitsi.meeting_url,
+            meetingRoom: jitsi.meeting_room,
+          },
+          conn,
+        });
+      }
+
+      for (const panelistId of panelistIds) {
+        await createNotification({
+          userId: panelistId,
+          type: 'schedule',
+          title: `${defenseTypeLabel} Defense Panel Assignment`,
           message: appendMeetingLinkToMessage(
-            `The ${resolvedDefenseType} defense for "${project.title}" has been scheduled.`,
+            `You were assigned as a panelist for the ${resolvedDefenseType} defense of "${project.title}".`,
             jitsi.meeting_url
           ),
           metadata: {
             defenseId,
             projectId: project.id,
             courseId: resolvedCourseId,
+            role: 'panelist',
             meetingUrl: jitsi.meeting_url,
             meetingRoom: jitsi.meeting_room,
           },
@@ -1841,6 +1983,7 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
   const resolvedProjectId = projectId || project_id;
   const resolvedRubricId = rubricId || rubric_id || null;
   const resolvedDefenseType = defenseType || defense_type;
+  const panelistIds = normalizePanelistIds(payload);
   const startInput = scheduledAt || start_time || (date && startTime ? `${date}T${startTime}` : null);
   const endInput = end_time || (date && endTime ? `${date}T${endTime}` : null);
   const scheduleWindow = getScheduleWindow({ start_time: startInput, end_time: endInput });
@@ -1851,6 +1994,11 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
   }
   if (scheduleWindow.error) return { error: scheduleWindow.error, status: 400 };
   if (!location) return { error: 'location is required', status: 400 };
+
+  const panelistValidation = await validateInstitutionPanelists(institutionId, panelistIds);
+  if (panelistValidation.error) {
+    return { error: panelistValidation.error, status: panelistValidation.status || 400 };
+  }
 
   const { rows: projectRows } = await db.query(
     `SELECT p.id, p.title, p.project_code
@@ -1896,10 +2044,13 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
     );
 
     const targetVenue = venue || location;
+    const participantIds = Array.from(
+      new Set([...memberRows.map((member) => member.user_id), ...panelistIds])
+    );
     const conflicts = await getCoordinatorApprovalConflicts({
       defenseId: null,
       projectId: resolvedProjectId,
-      memberIds: memberRows.map((member) => member.user_id),
+      memberIds: participantIds,
       location: targetVenue,
       startAt: normalizedStart.dbValue,
       endAt: normalizedEnd.dbValue,
@@ -1945,9 +2096,14 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
       ]
     );
 
+    if (panelistIds.length) {
+      await assignDefensePanelists(conn, defenseId, panelistIds);
+    }
+
     const dateStr = normalizedStart.dateValue.toLocaleDateString();
     const timeStr = normalizedStart.dateValue.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const notifTitle = `${resolvedDefenseType.charAt(0).toUpperCase() + resolvedDefenseType.slice(1)} Defense Scheduled`;
+    const defenseTypeLabel = `${resolvedDefenseType.charAt(0).toUpperCase() + resolvedDefenseType.slice(1)}`;
+    const notifTitle = `${defenseTypeLabel} Defense Scheduled`;
     const notifMessage = appendMeetingLinkToMessage(
       `The ${resolvedDefenseType} defense for "${project.title}" has been scheduled on ${dateStr} at ${timeStr}.`,
       jitsi.meeting_url
@@ -1970,10 +2126,32 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
       });
     }
 
+    for (const panelistId of panelistIds) {
+      await createNotification({
+        userId: panelistId,
+        type: 'schedule',
+        title: `${defenseTypeLabel} Defense Panel Assignment`,
+        message: appendMeetingLinkToMessage(
+          `You were assigned as a panelist for the ${resolvedDefenseType} defense of "${project.title}" on ${dateStr} at ${timeStr}.`,
+          jitsi.meeting_url
+        ),
+        metadata: {
+          defenseId,
+          projectId: resolvedProjectId,
+          role: 'panelist',
+          schedule: normalizedStart.dbValue,
+          meetingUrl: jitsi.meeting_url,
+          meetingRoom: jitsi.meeting_room,
+        },
+        conn,
+      });
+    }
+
     await conn.commit();
 
     const { rows: createdRows } = await db.query(
-      `SELECT d.*, p.title AS project_title, p.project_code
+      `SELECT d.*, p.title AS project_title, p.project_code,
+              ${DEFENSE_PANELIST_NAMES_SQL}
        FROM defenses d
        JOIN projects p ON p.id = d.project_id
        WHERE d.id = ?
@@ -2001,9 +2179,8 @@ async function getProjectsByInstitution(institutionId) {
        ON pm.project_id = p.id
       AND pm.role = 'adviser'
       AND pm.status = 'accepted'
-     INNER JOIN course_advisers ca ON ca.user_id = pm.user_id
-     INNER JOIN courses inst_c ON inst_c.id = ca.course_id AND inst_c.institution_id = ?
      LEFT JOIN courses c ON c.id = p.course_id
+     WHERE p.institution_id = ?
      ORDER BY p.created_at DESC`,
     [institutionId],
   );
@@ -2016,14 +2193,28 @@ async function getProjectsByAdviserInInstitution(institutionId) {
        u.id AS adviser_id, u.full_name AS adviser_name, u.email AS adviser_email, u.avatar_url AS adviser_avatar,
        p.id AS project_id, p.title AS project_title, p.project_code, p.status AS project_status,
        p.project_type, p.created_at AS project_created_at
-     FROM course_advisers ca
-     INNER JOIN courses c ON c.id = ca.course_id AND c.institution_id = ?
-     INNER JOIN users u ON u.id = ca.user_id
+     FROM users u
+     INNER JOIN (
+       SELECT ca.user_id
+       FROM course_advisers ca
+       INNER JOIN courses c ON c.id = ca.course_id AND c.institution_id = ?
+       UNION
+       SELECT pm.user_id
+       FROM project_members pm
+       INNER JOIN projects proj ON proj.id = pm.project_id
+       WHERE pm.role = 'adviser'
+         AND pm.status = 'accepted'
+         AND proj.institution_id = ?
+     ) scoped_advisers ON scoped_advisers.user_id = u.id
      LEFT JOIN project_members pm
-       ON pm.user_id = u.id AND pm.role = 'adviser' AND pm.status = 'accepted'
-     LEFT JOIN projects p ON p.id = pm.project_id
+       ON pm.user_id = u.id
+      AND pm.role = 'adviser'
+      AND pm.status = 'accepted'
+     LEFT JOIN projects p
+       ON p.id = pm.project_id
+      AND p.institution_id = ?
      ORDER BY u.full_name ASC, p.title ASC`,
-    [institutionId],
+    [institutionId, institutionId, institutionId],
   );
 
   const adviserMap = new Map();
@@ -2059,6 +2250,7 @@ module.exports = {
   getInstitutionByCoordinator,
   getInstitutionById,
   getAdvisersInInstitution,
+  getPanelistsInInstitution,
   addAdviserToInstitution,
   removeAdviserFromInstitution,
   removeAdviserFromCourse,
@@ -2087,4 +2279,5 @@ module.exports = {
   deleteCoordinatorRubric,
   getProjectsByInstitution,
   getProjectsByAdviserInInstitution,
+  getProjectsForCourseInInstitution,
 };

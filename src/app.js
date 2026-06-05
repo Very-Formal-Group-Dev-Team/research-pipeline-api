@@ -18,9 +18,11 @@ const projectsRouter = require('./modules/projects/projects.routes');
 const notificationsRouter = require('./modules/notifications/notifications.routes');
 const defensesRouter = require('./modules/defenses/defenses.routes');
 const coordinatorRouter = require('./modules/coordinator/coordinator.routes');
+const adviserRouter = require('./modules/adviser/adviser.routes');
 const scheduleRouter = require('./modules/schedule/schedule.routes');
 const fileOperationsRouter = require('./modules/file_operations/file_operations.routes');
 const publicRouter = require('./modules/public/public.routes');
+const institutionsRouter = require('./modules/institutions/institutions.routes');
 const app = express();
 
 app.disable('x-powered-by');
@@ -126,7 +128,9 @@ app.use('/api/notifications', notificationsRouter);
 app.use('/api/defenses', defensesRouter);
 app.use('/api/schedule', scheduleRouter);
 app.use('/api/coordinator', coordinatorRouter);
+app.use('/api/adviser', adviserRouter);
 app.use('/api/public', publicRouter);
+app.use('/api/institutions', institutionsRouter);
 app.use('/api', fileOperationsRouter);
 app.use('/api/file-operations', fileOperationsRouter);
 

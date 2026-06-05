@@ -27,6 +27,7 @@ async function createProject({
   projectType,
   program,
   course,
+  courseId,
   section,
   documentReference,
   createdBy,
@@ -41,13 +42,28 @@ async function createProject({
     );
     const institutionId = roleRows[0]?.institution_id || null;
 
+    let resolvedCourseId = courseId || null;
+    let resolvedCourseName = course || null;
+
+    if (resolvedCourseId && institutionId) {
+      const institutionsService = require('../institutions/institutions.service');
+      const courseRow = await institutionsService.getCourseForInstitution(
+        institutionId,
+        resolvedCourseId,
+      );
+      if (!courseRow) {
+        throw new Error('Selected course is not available in your institution');
+      }
+      resolvedCourseName = courseRow.course_name;
+    }
+
     const normalizedProjectType = String(projectType || 'thesis').trim().toLowerCase();
     const safeProjectType =
       normalizedProjectType === 'capstone' ? 'capstone' : 'thesis';
 
     const [result] = await conn.execute(
-      `INSERT INTO projects (title, description, abstract, keywords, paper_standard, program, course, section, document_reference, created_by, institution_id, status, project_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'topic_proposal', ?)`,
+      `INSERT INTO projects (title, description, abstract, keywords, paper_standard, program, course, course_id, section, document_reference, created_by, institution_id, status, project_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'topic_proposal', ?)`,
       [
         title,
         abstract,
@@ -55,7 +71,8 @@ async function createProject({
         JSON.stringify(keywords || []),
         (researchType || 'ieee').toLowerCase(),
         program || null,
-        course || null,
+        resolvedCourseName,
+        resolvedCourseId,
         section || null,
         documentReference || null,
         createdBy,
@@ -659,6 +676,72 @@ const ALLOWED_STATUSES = new Set([
   'rejected',
 ]);
 
+const PROJECT_STAGE_LABELS = {
+  topic_proposal: 'Topic Proposal',
+  approved: 'Approved',
+  ongoing: 'Ongoing',
+  for_pre_defense: 'For Pre-Defense',
+  for_final_defense: 'For Final Defense',
+  completed: 'Completed',
+  for_publication: 'For Publication',
+  rejected: 'Rejected',
+};
+
+function normalizeProjectStatus(status) {
+  const current = String(status || 'topic_proposal').trim().toLowerCase();
+  if (current === 'draft') return 'topic_proposal';
+  if (current === 'active') return 'ongoing';
+  if (current === 'archived') return 'completed';
+  return current;
+}
+
+function formatProjectStageLabel(stage) {
+  return PROJECT_STAGE_LABELS[stage] || stage;
+}
+
+async function notifyProjectMembersStageUpdated({
+  projectId,
+  newStage,
+  previousStage,
+  triggeredByUserId,
+}) {
+  const { rows } = await db.query(
+    `SELECT pm.user_id, p.title, adviser.full_name AS adviser_name
+     FROM project_members pm
+     JOIN projects p ON p.id = pm.project_id
+     LEFT JOIN users adviser ON adviser.id = ?
+     WHERE pm.project_id = ? AND pm.status = 'accepted'`,
+    [triggeredByUserId, projectId],
+  );
+
+  const recipients = rows
+    .map((row) => row.user_id)
+    .filter((userId) => userId && userId !== triggeredByUserId);
+
+  if (!recipients.length) {
+    return;
+  }
+
+  const projectTitle = rows[0]?.title || 'your project';
+  const adviserName = rows[0]?.adviser_name || 'Your adviser';
+
+  await Promise.all(
+    recipients.map((userId) =>
+      notificationsService.upsertUnreadProjectStageNotification({
+        userId,
+        projectId,
+        title: 'Research stage updated',
+        adviserName,
+        projectTitle,
+        newStage,
+        previousStage,
+        updatedByUserId: triggeredByUserId,
+        formatStageLabel: formatProjectStageLabel,
+      }),
+    ),
+  );
+}
+
 async function isProjectAdviser(projectId, userId) {
   const { rows } = await db.query(
     `SELECT id FROM project_members
@@ -697,27 +780,27 @@ async function updateProjectStatus(projectId, status, userId) {
     return { error: 'Project not found' };
   }
 
-  if (mapped === 'rejected') {
-    const current = String(project.status || 'topic_proposal').trim().toLowerCase();
-    const currentMapped =
-      current === 'draft'
-        ? 'topic_proposal'
-        : current === 'active'
-          ? 'ongoing'
-          : current === 'archived'
-            ? 'completed'
-            : current;
-    if (currentMapped !== 'topic_proposal') {
-      return {
-        error: 'Only projects in the Topic Proposal stage can be rejected',
-      };
-    }
+  const currentMapped = normalizeProjectStatus(project.status);
+
+  if (mapped === 'rejected' && currentMapped === 'rejected') {
+    return { error: 'Project is already rejected' };
+  }
+
+  if (currentMapped === mapped) {
+    return { data: project };
   }
 
   await db.query(
     'UPDATE projects SET status = ?, updated_at = NOW() WHERE id = ?',
     [mapped, projectId]
   );
+
+  await notifyProjectMembersStageUpdated({
+    projectId,
+    newStage: mapped,
+    previousStage: currentMapped,
+    triggeredByUserId: userId,
+  });
 
   const updated = await getProjectById(projectId);
   return { data: updated };
@@ -742,8 +825,34 @@ async function updateProjectDetails(projectId, details) {
     paperStandard,
     program,
     course,
+    courseId,
     section,
   } = details;
+
+  let resolvedCourseId = courseId || null;
+  let resolvedCourseName = course || null;
+
+  if (resolvedCourseId) {
+    const { rows: projectRows } = await db.query(
+      'SELECT institution_id FROM projects WHERE id = ? LIMIT 1',
+      [projectId],
+    );
+    const institutionId = projectRows[0]?.institution_id || null;
+
+    if (institutionId) {
+      const institutionsService = require('../institutions/institutions.service');
+      const courseRow = await institutionsService.getCourseForInstitution(
+        institutionId,
+        resolvedCourseId,
+      );
+      if (!courseRow) {
+        throw new Error('Selected course is not available in your institution');
+      }
+      resolvedCourseName = courseRow.course_name;
+    } else {
+      resolvedCourseId = null;
+    }
+  }
 
   await db.query(
     `UPDATE projects
@@ -752,6 +861,7 @@ async function updateProjectDetails(projectId, details) {
          paper_standard = ?,
          program = ?,
          course = ?,
+         course_id = ?,
          section = ?,
          updated_at = NOW()
      WHERE id = ?`,
@@ -760,7 +870,8 @@ async function updateProjectDetails(projectId, details) {
       projectType,
       paperStandard,
       program,
-      course,
+      resolvedCourseName,
+      resolvedCourseId,
       section,
       projectId,
     ],

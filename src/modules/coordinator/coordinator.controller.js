@@ -29,6 +29,11 @@ async function getAdvisers(req, res) {
   return res.json(advisers);
 }
 
+async function getPanelists(req, res) {
+  const panelists = await coordinatorService.getPanelistsInInstitution(req.institution.id);
+  return res.json(panelists);
+}
+
 async function addAdviser(req, res) {
   const { adviserId, courseId } = req.body;
   if (!adviserId || !courseId) {
@@ -72,6 +77,17 @@ async function removeAdviserFromCourse(req, res) {
 async function listCourses(req, res) {
   const courses = await coordinatorService.getCoursesWithAdvisersByInstitution(req.institution.id);
   return res.json(courses);
+}
+
+async function getCourseGroups(req, res) {
+  const { courseId } = req.params;
+  const course = await coordinatorService.getCourseById(courseId);
+  if (!course || course.institution_id !== req.institution.id) {
+    return res.status(404).json({ error: 'Course not found in your institution' });
+  }
+
+  const groups = await coordinatorService.getProjectsForCourseInInstitution(req.institution.id, courseId);
+  return res.json(groups);
 }
 
 async function createCourse(req, res) {
@@ -313,10 +329,12 @@ module.exports = {
   getDashboard,
   getInstitution,
   getAdvisers,
+  getPanelists,
   addAdviser,
   removeAdviser,
   removeAdviserFromCourse,
   listCourses,
+  getCourseGroups,
   createCourse,
   updateCourse,
   deleteCourse,

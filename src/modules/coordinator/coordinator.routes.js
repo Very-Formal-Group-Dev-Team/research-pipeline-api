@@ -21,11 +21,13 @@ router.get('/dashboard', asyncHandler(controller.getDashboard));
 // Institution management
 router.get('/institution', asyncHandler(controller.getInstitution));
 router.get('/institution/advisers', asyncHandler(controller.getAdvisers));
+router.get('/institution/panelists', asyncHandler(controller.getPanelists));
 router.post('/institution/advisers', asyncHandler(controller.addAdviser));
 router.delete('/institution/advisers/:adviserId', asyncHandler(controller.removeAdviser));
 
 // Course management
 router.get('/courses', asyncHandler(controller.listCourses));
+router.get('/courses/:courseId/groups', asyncHandler(controller.getCourseGroups));
 router.post('/courses', asyncHandler(controller.createCourse));
 router.put('/courses/:courseId', asyncHandler(controller.updateCourse));
 router.delete('/courses/:courseId', asyncHandler(controller.deleteCourse));
