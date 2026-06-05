@@ -142,12 +142,41 @@ async function listAllDefenses(req, res) {
 }
 
 async function verifyDefense(req, res) {
-  const { venue, location, modality, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense } =
-    req.body;
+  const {
+    venue,
+    location,
+    modality,
+    verifiedSchedule,
+    verifiedEndTime,
+    notes,
+    forceApprove,
+    holdDefense,
+    defenseType,
+    defense_type,
+    rubricId,
+    rubric_id,
+    panelistIds,
+    panelist_ids,
+  } = req.body;
   const result = await coordinatorService.verifyDefense(
     req.params.defenseId,
     req.user.id,
-    { venue, location, modality, verifiedSchedule, verifiedEndTime, notes, forceApprove, holdDefense }
+    {
+      venue,
+      location,
+      modality,
+      verifiedSchedule,
+      verifiedEndTime,
+      notes,
+      forceApprove,
+      holdDefense,
+      defenseType,
+      defense_type,
+      rubricId,
+      rubric_id,
+      panelistIds,
+      panelist_ids,
+    }
   );
 
   if (result.error) {
