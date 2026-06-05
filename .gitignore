@@ -4,3 +4,4 @@ uploads/
 docker/jitsi/.env
 docker/jitsi/cfg/
 docker/jitsi/docker/
+__pycache__/
