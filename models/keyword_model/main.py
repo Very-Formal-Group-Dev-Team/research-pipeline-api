@@ -150,11 +150,6 @@ class PredictDetailedResponse(BaseModel):
 app = FastAPI(title="AI Keyword Prediction Service", version="1.0.0")
 
 
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
 @app.post("/predict-keywords", response_model=PredictResponse)
 def predict(payload: PredictRequest) -> PredictResponse:
     result = predict_with_vectorization(payload.text, top_k=payload.top_k)

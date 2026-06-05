@@ -11,6 +11,8 @@ const {
   updateMeeting,
   completeMeeting,
   restoreMeeting,
+  getDefenseMeetingSession,
+  saveDefensePanelEvaluations,
 } = require('./defenses.service');
 
 async function postDefense(req, res) {
@@ -144,6 +146,32 @@ async function patchRestoreMeeting(req, res) {
   });
 }
 
+async function getDefenseMeetingSessionHandler(req, res) {
+  try {
+    const result = await getDefenseMeetingSession(req.user.id, req.params.id);
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    return res.json(result.data);
+  } catch (err) {
+    console.error('defenses.controller – getDefenseMeetingSession error:', err);
+    return res.status(500).json({ error: 'Failed to load defense meeting session' });
+  }
+}
+
+async function putDefensePanelEvaluations(req, res) {
+  try {
+    const result = await saveDefensePanelEvaluations(req.user.id, req.params.id, req.body || {});
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    return res.json(result.data);
+  } catch (err) {
+    console.error('defenses.controller – putDefensePanelEvaluations error:', err);
+    return res.status(500).json({ error: 'Failed to save panel evaluations' });
+  }
+}
+
 async function getProjectMeetings(req, res) {
   try {
     const projectId = req.params.projectId;
@@ -167,6 +195,8 @@ module.exports = {
   getMyProjectDefenses,
   getProjectMeetings,
   getMeetingById,
+  getDefenseMeetingSessionHandler,
+  putDefensePanelEvaluations,
   patchUpdateMeeting,
   patchCompleteMeeting,
   patchRestoreMeeting,

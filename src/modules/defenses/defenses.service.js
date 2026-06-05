@@ -998,8 +998,58 @@ async function getProjectDefenseSchedules(userId) {
      INNER JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = ? AND pm.status = 'accepted'
      LEFT JOIN users u ON m.created_by = u.id
      WHERE m.status NOT IN ('cancelled', 'rejected')
+     UNION ALL
+     SELECT d.id,
+            d.project_id,
+            p.title AS project_title,
+            p.project_code,
+            d.defense_type,
+            d.scheduled_at AS start_time,
+            COALESCE(d.end_time, d.scheduled_at) AS end_time,
+            d.location,
+            d.venue,
+            d.modality,
+            d.status,
+            d.created_by,
+            d.meeting_room,
+            d.meeting_url,
+            d.meeting_provider,
+            'defense' AS schedule_source,
+            CASE
+              WHEN d.status = 'scheduled' THEN 'Scheduled'
+              WHEN d.status = 'pending' THEN 'Pending'
+              WHEN d.status = 'approved' THEN 'Approved'
+              WHEN d.status = 'cancelled' THEN 'Cancelled'
+              WHEN d.status = 'rescheduled' THEN 'Rescheduled'
+              WHEN d.status = 'completed' THEN 'Completed'
+              ELSE d.status
+            END AS status_label,
+            u.full_name AS created_by_name,
+            (
+              SELECT u2.full_name
+              FROM project_members pm2
+              INNER JOIN users u2 ON u2.id = pm2.user_id
+              WHERE pm2.project_id = d.project_id
+                AND pm2.role = 'adviser'
+                AND pm2.status = 'accepted'
+              ORDER BY pm2.invited_at ASC
+              LIMIT 1
+            ) AS adviser_name,
+            d.created_at
+     FROM defenses d
+     INNER JOIN projects p ON d.project_id = p.id
+     INNER JOIN defense_panelists dp ON dp.defense_id = d.id AND dp.user_id = ?
+     LEFT JOIN users u ON d.created_by = u.id
+     WHERE d.status NOT IN ('cancelled', 'rejected')
+       AND NOT EXISTS (
+         SELECT 1
+         FROM project_members pm
+         WHERE pm.project_id = d.project_id
+           AND pm.user_id = ?
+           AND pm.status = 'accepted'
+       )
      ORDER BY start_time DESC, created_at DESC`,
-    [userId, userId]
+    [userId, userId, userId, userId]
   );
   return rows;
 }
@@ -1565,6 +1615,292 @@ async function processAllPendingDefenses() {
   }
 }
 
+async function assertDefenseMeetingAccess(userId, defenseId) {
+  if (!defenseId) {
+    return { error: 'defenseId is required', status: 400 };
+  }
+
+  const { rows } = await db.query(
+    `SELECT d.*, p.title AS project_title, p.project_code, p.institution_id
+     FROM defenses d
+     INNER JOIN projects p ON p.id = d.project_id
+     WHERE d.id = ?
+     LIMIT 1`,
+    [defenseId]
+  );
+
+  if (rows.length) {
+    const defense = rows[0];
+    const [{ rows: panelistRows }, { rows: memberRows }, { rows: coordRows }] = await Promise.all([
+      db.query(
+        `SELECT 1 AS ok FROM defense_panelists WHERE defense_id = ? AND user_id = ? LIMIT 1`,
+        [defenseId, userId]
+      ),
+      db.query(
+        `SELECT 1 AS ok FROM project_members
+         WHERE project_id = ? AND user_id = ? AND status = 'accepted'
+         LIMIT 1`,
+        [defense.project_id, userId]
+      ),
+      db.query(
+        `SELECT 1 AS ok FROM user_roles
+         WHERE user_id = ? AND institution_id = ? AND role = 'coordinator'
+         LIMIT 1`,
+        [userId, defense.institution_id]
+      ),
+    ]);
+
+    const isPanelist = panelistRows.length > 0;
+    const isMember = memberRows.length > 0;
+    const isCreator = defense.created_by === userId;
+    const isCoordinator = coordRows.length > 0;
+
+    if (!isPanelist && !isMember && !isCreator && !isCoordinator) {
+      return { error: 'You are not allowed to join this defense', status: 403 };
+    }
+
+    return { defense, isPanelist, scheduleSource: 'defense' };
+  }
+
+  const { rows: meetingRows } = await db.query(
+    `SELECT m.*, p.title AS project_title, p.project_code, p.institution_id
+     FROM ${ADVISER_BOOKING_TABLE} m
+     LEFT JOIN projects p ON p.id = m.project_id
+     WHERE m.id = ?
+     LIMIT 1`,
+    [defenseId]
+  );
+
+  if (!meetingRows.length) {
+    return { error: 'Defense not found', status: 404 };
+  }
+
+  const meeting = meetingRows[0];
+  const [{ rows: memberRows }, { rows: creatorRows }] = await Promise.all([
+    db.query(
+      `SELECT 1 AS ok FROM project_members
+       WHERE project_id = ? AND user_id = ? AND status = 'accepted'
+       LIMIT 1`,
+      [meeting.project_id, userId]
+    ),
+    db.query(
+      `SELECT 1 AS ok FROM ${ADVISER_BOOKING_TABLE}
+       WHERE id = ? AND (created_by = ? OR adviser_id = ?)
+       LIMIT 1`,
+      [defenseId, userId, userId]
+    ),
+  ]);
+
+  if (!memberRows.length && !creatorRows.length) {
+    return { error: 'You are not allowed to join this meeting', status: 403 };
+  }
+
+  return { defense: meeting, isPanelist: false, scheduleSource: 'meeting' };
+}
+
+async function getDefenseRubric(rubricId) {
+  if (!rubricId) return null;
+
+  const { rows } = await db.query(
+    `SELECT id, name, description, defense_type, role, created_by, created_at
+     FROM rubrics
+     WHERE id = ?
+     LIMIT 1`,
+    [rubricId]
+  );
+
+  if (!rows.length) return null;
+
+  const { rows: criteria } = await db.query(
+    `SELECT id, rubric_id, criterion_name, weight, description, max_score, \`order\`
+     FROM rubric_criteria
+     WHERE rubric_id = ?
+     ORDER BY \`order\` ASC, criterion_name ASC`,
+    [rubricId]
+  );
+
+  return { ...rows[0], criteria };
+}
+
+async function getDefenseMeetingSession(userId, defenseId) {
+  const access = await assertDefenseMeetingAccess(userId, defenseId);
+  if (access.error) return access;
+
+  const { defense, isPanelist, scheduleSource } = access;
+  const rubric = scheduleSource === 'defense' ? await getDefenseRubric(defense.rubric_id) : null;
+
+  let evaluations = [];
+  let notes = '';
+
+  if (isPanelist && scheduleSource === 'defense') {
+    const [{ rows: evalRows }, { rows: noteRows }] = await Promise.all([
+      db.query(
+        `SELECT criterion_id, score, comments
+         FROM evaluations
+         WHERE defense_id = ? AND panelist_id = ?`,
+        [defenseId, userId]
+      ),
+      db.query(
+        `SELECT notes FROM defense_panelist_notes
+         WHERE defense_id = ? AND panelist_id = ?
+         LIMIT 1`,
+        [defenseId, userId]
+      ),
+    ]);
+
+    evaluations = evalRows.map((row) => ({
+      criterion_id: row.criterion_id,
+      score: Number(row.score),
+      comments: row.comments || '',
+    }));
+    notes = noteRows[0]?.notes || '';
+  }
+
+  return {
+    data: {
+      defense: {
+        id: defense.id,
+        project_id: defense.project_id,
+        project_title: defense.project_title,
+        project_code: defense.project_code,
+        defense_type: defense.defense_type,
+        modality: defense.modality,
+        status: defense.status,
+        meeting_room: defense.meeting_room,
+        meeting_url: defense.meeting_url,
+        meeting_provider: defense.meeting_provider,
+        start_time: defense.scheduled_at,
+        end_time: defense.end_time || defense.scheduled_at,
+        schedule_source: scheduleSource,
+      },
+      is_panelist: isPanelist,
+      rubric,
+      evaluations,
+      notes,
+    },
+  };
+}
+
+function normalizePanelEvaluationPayload(payload = {}) {
+  const rawScores = payload.scores ?? payload.evaluations ?? [];
+  const scores = Array.isArray(rawScores)
+    ? rawScores.map((row) => ({
+      criterionId: row.criterionId || row.criterion_id,
+      score: row.score,
+      comments: row.comments ?? row.comment ?? '',
+    }))
+    : [];
+
+  const notes = typeof payload.notes === 'string' ? payload.notes : '';
+  return { scores, notes };
+}
+
+async function saveDefensePanelEvaluations(userId, defenseId, payload) {
+  const access = await assertDefenseMeetingAccess(userId, defenseId);
+  if (access.error) return access;
+
+  if (!access.isPanelist || access.scheduleSource !== 'defense') {
+    return { error: 'Only assigned panelists can submit evaluations', status: 403 };
+  }
+
+  const defense = access.defense;
+  const { scores, notes } = normalizePanelEvaluationPayload(payload);
+
+  const rubric = defense.rubric_id ? await getDefenseRubric(defense.rubric_id) : null;
+  const criteriaById = new Map((rubric?.criteria || []).map((c) => [c.id, c]));
+  const normalizedScores = [];
+
+  for (const row of scores) {
+    const criterionId = row.criterionId;
+    if (!criterionId) continue;
+
+    if (!criteriaById.has(criterionId)) {
+      return { error: 'One or more rubric criteria are invalid', status: 400 };
+    }
+
+    const score = Number(row.score);
+    if (!Number.isFinite(score) || score < 0) {
+      return { error: 'Scores must be valid non-negative numbers', status: 400 };
+    }
+
+    const maxScore = Number(criteriaById.get(criterionId).max_score) || 5;
+    if (score > maxScore) {
+      return { error: `Score cannot exceed ${maxScore} for a criterion`, status: 400 };
+    }
+
+    normalizedScores.push({
+      criterionId,
+      score,
+      comments: typeof row.comments === 'string' ? row.comments.trim() : '',
+    });
+  }
+
+  if (normalizedScores.length && !rubric) {
+    return { error: 'This defense has no rubric assigned', status: 400 };
+  }
+
+  let conn;
+  try {
+    conn = await db.pool.getConnection();
+    await conn.beginTransaction();
+
+    await conn.execute(
+      'DELETE FROM evaluations WHERE defense_id = ? AND panelist_id = ?',
+      [defenseId, userId]
+    );
+
+    for (const row of normalizedScores) {
+      const [idRows] = await conn.execute('SELECT UUID() AS id');
+      await conn.execute(
+        `INSERT INTO evaluations (
+           id, defense_id, project_id, panelist_id, criterion_id, score, comments
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          idRows[0].id,
+          defenseId,
+          defense.project_id,
+          userId,
+          row.criterionId,
+          row.score,
+          row.comments || null,
+        ]
+      );
+    }
+
+    const [existingNoteRows] = await conn.execute(
+      `SELECT id FROM defense_panelist_notes
+       WHERE defense_id = ? AND panelist_id = ?
+       LIMIT 1`,
+      [defenseId, userId]
+    );
+
+    if (existingNoteRows.length) {
+      await conn.execute(
+        `UPDATE defense_panelist_notes SET notes = ? WHERE id = ?`,
+        [notes || null, existingNoteRows[0].id]
+      );
+    } else if (notes.trim()) {
+      const [idRows] = await conn.execute('SELECT UUID() AS id');
+      await conn.execute(
+        `INSERT INTO defense_panelist_notes (id, defense_id, panelist_id, notes)
+         VALUES (?, ?, ?, ?)`,
+        [idRows[0].id, defenseId, userId, notes]
+      );
+    }
+
+    await conn.commit();
+    return getDefenseMeetingSession(userId, defenseId);
+  } catch (err) {
+    if (conn) {
+      try { await conn.rollback(); } catch (_) { /* ignore */ }
+    }
+    throw err;
+  } finally {
+    if (conn) conn.release();
+  }
+}
+
 module.exports = {
   createDefense,
   getDefensesByUser,
@@ -1580,4 +1916,6 @@ module.exports = {
   restoreMeeting,
   validateScheduleConstraints,
   getScheduleWindow,
+  getDefenseMeetingSession,
+  saveDefensePanelEvaluations,
 };
