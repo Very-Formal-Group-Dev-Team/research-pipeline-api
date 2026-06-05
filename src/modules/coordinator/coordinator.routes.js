@@ -21,6 +21,7 @@ router.get('/dashboard', asyncHandler(controller.getDashboard));
 // Institution management
 router.get('/institution', asyncHandler(controller.getInstitution));
 router.get('/institution/advisers', asyncHandler(controller.getAdvisers));
+router.get('/institution/panelists', asyncHandler(controller.getPanelists));
 router.post('/institution/advisers', asyncHandler(controller.addAdviser));
 router.delete('/institution/advisers/:adviserId', asyncHandler(controller.removeAdviser));
 
