@@ -157,28 +157,25 @@ async function completeProfile(userId, payload) {
   }
 
   const currentRole = await db.query(
-    'SELECT id, role FROM user_roles WHERE user_id = ? ORDER BY created_at DESC LIMIT 1',
+    'SELECT id, role, institution_id FROM user_roles WHERE user_id = ? ORDER BY created_at DESC LIMIT 1',
     [userId],
   );
 
-  let institutionId = null;
+  const institutionsService = require('../institutions/institutions.service');
+  await institutionsService.ensureRegisteredInstitutions();
 
-  if (role === 'coordinator') {
-    const instName = typeof payload.institutionName === 'string' && payload.institutionName.trim()
-      ? payload.institutionName.trim()
-      : `${displayName}'s Institution`;
-    const instCode = instName.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10) + '-' + Date.now().toString(36).toUpperCase();
+  const institutionId =
+    typeof payload.institutionId === 'string' && payload.institutionId.trim()
+      ? payload.institutionId.trim()
+      : null;
 
-    await db.query(
-      `INSERT INTO institutions (id, name, code, created_at, updated_at) VALUES (UUID(), ?, ?, NOW(), NOW())`,
-      [instName, instCode],
-    );
+  if (!institutionId) {
+    return { error: 'institutionId is required' };
+  }
 
-    const { rows: instRows } = await db.query(
-      'SELECT id FROM institutions WHERE code = ? LIMIT 1',
-      [instCode],
-    );
-    institutionId = instRows[0]?.id || null;
+  const isRegistered = await institutionsService.isRegisteredInstitutionId(institutionId);
+  if (!isRegistered) {
+    return { error: 'Please select a registered institution' };
   }
 
   if (!currentRole.rows[0]) {
@@ -186,15 +183,10 @@ async function completeProfile(userId, payload) {
       'INSERT INTO user_roles (id, user_id, role, institution_id, created_at) VALUES (UUID(), ?, ?, ?, NOW())',
       [userId, role, institutionId],
     );
-  } else if (currentRole.rows[0].role !== role) {
+  } else if (currentRole.rows[0].role !== role || currentRole.rows[0].institution_id !== institutionId) {
     await db.query(
       'UPDATE user_roles SET role = ?, institution_id = ? WHERE id = ?',
       [role, institutionId, currentRole.rows[0].id],
-    );
-  } else if (role === 'coordinator' && institutionId) {
-    await db.query(
-      'UPDATE user_roles SET institution_id = ? WHERE id = ?',
-      [institutionId, currentRole.rows[0].id],
     );
   }
 

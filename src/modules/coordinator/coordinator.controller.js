@@ -79,6 +79,17 @@ async function listCourses(req, res) {
   return res.json(courses);
 }
 
+async function getCourseGroups(req, res) {
+  const { courseId } = req.params;
+  const course = await coordinatorService.getCourseById(courseId);
+  if (!course || course.institution_id !== req.institution.id) {
+    return res.status(404).json({ error: 'Course not found in your institution' });
+  }
+
+  const groups = await coordinatorService.getProjectsForCourseInInstitution(req.institution.id, courseId);
+  return res.json(groups);
+}
+
 async function createCourse(req, res) {
   const { courseName, code, description } = req.body;
   if (!courseName || !code) {
@@ -323,6 +334,7 @@ module.exports = {
   removeAdviser,
   removeAdviserFromCourse,
   listCourses,
+  getCourseGroups,
   createCourse,
   updateCourse,
   deleteCourse,

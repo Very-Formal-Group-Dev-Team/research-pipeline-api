@@ -109,7 +109,7 @@ async function callKeywordModel(extractedText) {
 
 async function create(req, res) {
   try {
-    const { title, abstract, keywords, researchType, projectType, program, course, section } =
+    const { title, abstract, keywords, researchType, projectType, program, course, courseId, section } =
       req.body;
 
     if (!title || !title.trim()) {
@@ -140,6 +140,7 @@ async function create(req, res) {
       projectType: normalizedProjectType,
       program: program || null,
       course: course || null,
+      courseId: courseId || null,
       section: section || null,
       documentReference: null,
       createdBy: req.user.id,
@@ -632,6 +633,8 @@ async function updateDetails(req, res) {
       typeof req.body?.program === 'string' ? req.body.program.trim() || null : null;
     const course =
       typeof req.body?.course === 'string' ? req.body.course.trim() || null : null;
+    const courseId =
+      typeof req.body?.courseId === 'string' ? req.body.courseId.trim() || null : null;
     const section =
       typeof req.body?.section === 'string' ? req.body.section.trim() || null : null;
 
@@ -641,6 +644,7 @@ async function updateDetails(req, res) {
       paperStandard,
       program,
       course,
+      courseId,
       section,
     });
 
