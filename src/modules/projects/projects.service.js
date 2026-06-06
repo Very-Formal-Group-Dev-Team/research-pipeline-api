@@ -1412,6 +1412,13 @@ async function leaveProject(projectId, userId, { reason, successorMemberId, conf
         await conn.rollback();
         return { error: 'Selected successor is not a valid project member', status: 400 };
       }
+      if (successor.role === 'adviser') {
+        await conn.rollback();
+        return {
+          error: 'The new project owner must be a collaborator, not an adviser',
+          status: 400,
+        };
+      }
 
       if (typeof confirmDisplayName !== 'string' || confirmDisplayName !== actorName) {
         await conn.rollback();
@@ -1557,6 +1564,12 @@ async function transferProjectLeadership(projectId, leaderUserId, targetMemberId
   }
   if (target.role === 'leader') {
     return { error: 'This member is already the project leader', status: 400 };
+  }
+  if (target.role === 'adviser') {
+    return {
+      error: 'Leadership can only be transferred to a collaborator, not an adviser',
+      status: 400,
+    };
   }
   if (target.user_id === leaderUserId) {
     return { error: 'You cannot transfer leadership to yourself', status: 400 };
