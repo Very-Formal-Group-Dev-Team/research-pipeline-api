@@ -330,19 +330,40 @@ async function join(req, res) {
       return res.status(404).json({ error: 'No project found with that code' });
     }
 
-    const alreadyMember = await projectsService.isProjectMember(project.id, req.user.id);
-    if (alreadyMember) {
+    const userRole = await getRoleByUserId(req.user.id);
+    const membership = await projectsService.getProjectMembership(project.id, req.user.id);
+
+    if (membership?.status === 'accepted') {
       return res.status(409).json({ error: 'You are already a member of this project' });
     }
 
-    const userRole = await getRoleByUserId(req.user.id);
-    const memberRole = userRole === 'adviser' ? 'adviser' : 'member';
+    if (userRole === 'adviser') {
+      if (membership?.status === 'pending') {
+        return res.status(409).json({ error: 'You already have a pending request for this project' });
+      }
 
-    await projectsService.joinProject(project.id, req.user.id, memberRole);
+      await projectsService.joinProject(project.id, req.user.id, 'adviser');
+
+      return res.status(200).json({
+        success: true,
+        pending: false,
+        message: `Successfully joined "${project.title}"`,
+        project: { id: project.id, title: project.title },
+      });
+    }
+
+    if (membership?.status === 'pending') {
+      return res.status(409).json({
+        error: 'You already have a pending join request for this project. Wait for the leader to respond.',
+      });
+    }
+
+    await projectsService.requestJoinProject(project.id, req.user.id);
 
     return res.status(200).json({
       success: true,
-      message: `Successfully joined "${project.title}"`,
+      pending: true,
+      message: `Join request sent for "${project.title}". The project leader will review your request.`,
       project: { id: project.id, title: project.title },
     });
   } catch (err) {
@@ -449,6 +470,47 @@ async function getInvitations(req, res) {
   } catch (err) {
     console.error('projects.controller – getInvitations error:', err);
     return res.status(500).json({ error: 'Failed to fetch invitations' });
+  }
+}
+
+async function respondJoinRequest(req, res) {
+  try {
+    const { accept } = req.body;
+    const projectId = req.params.id;
+    const memberId = req.params.memberId;
+
+    if (typeof accept !== 'boolean') {
+      return res.status(400).json({ error: 'accept must be a boolean' });
+    }
+
+    const project = await projectsService.getProjectById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const result = await projectsService.respondToJoinRequest(memberId, accept, req.user.id);
+
+    if (result.projectId !== projectId) {
+      return res.status(400).json({ error: 'Join request does not belong to this project' });
+    }
+
+    return res.json({
+      success: true,
+      status: accept ? 'accepted' : 'declined',
+      userId: result.userId,
+    });
+  } catch (err) {
+    console.error('projects.controller – respondJoinRequest error:', err);
+    const message = err instanceof Error ? err.message : 'Failed to respond to join request';
+    if (
+      message.includes('not found') ||
+      message.includes('already been responded') ||
+      message.includes('not a join request') ||
+      message.includes('Only the project leader')
+    ) {
+      return res.status(400).json({ error: message });
+    }
+    return res.status(500).json({ error: 'Failed to respond to join request' });
   }
 }
 
@@ -804,6 +866,150 @@ async function deleteProject(req, res) {
   }
 }
 
+async function leaveProject(req, res) {
+  try {
+    const projectId = req.params.id;
+    const isMember = await projectsService.isAcceptedProjectMember(projectId, req.user.id);
+    if (!isMember) {
+      return res.status(403).json({ error: 'You are not a member of this project' });
+    }
+
+    const { reason, successorMemberId, confirmDisplayName } = req.body || {};
+    const result = await projectsService.leaveProject(projectId, req.user.id, {
+      reason: typeof reason === 'string' ? reason : undefined,
+      successorMemberId: typeof successorMemberId === 'string' ? successorMemberId : undefined,
+      confirmDisplayName: typeof confirmDisplayName === 'string' ? confirmDisplayName : undefined,
+    });
+
+    if (result.error) {
+      return res.status(result.status || 500).json({ error: result.error });
+    }
+
+    return res.json({
+      success: true,
+      action: result.action,
+      removed: Boolean(result.removed),
+    });
+  } catch (err) {
+    console.error('projects.controller – leaveProject error:', err);
+    return res.status(500).json({ error: 'Failed to leave project' });
+  }
+}
+
+async function transferLeadership(req, res) {
+  try {
+    const projectId = req.params.id;
+    const memberId = req.body?.memberId;
+    if (typeof memberId !== 'string' || !memberId.trim()) {
+      return res.status(400).json({ error: 'memberId is required' });
+    }
+
+    const result = await projectsService.transferProjectLeadership(
+      projectId,
+      req.user.id,
+      memberId,
+    );
+
+    if (result.error) {
+      return res.status(result.status || 500).json({ error: result.error });
+    }
+
+    return res.json({
+      success: true,
+      revert: result.revert,
+    });
+  } catch (err) {
+    console.error('projects.controller – transferLeadership error:', err);
+    return res.status(500).json({ error: 'Failed to transfer project leadership' });
+  }
+}
+
+async function revertLeadershipTransfer(req, res) {
+  try {
+    const projectId = req.params.id;
+    const { previousLeaderUserId, newLeaderUserId, previousNewLeaderRole } = req.body || {};
+
+    if (
+      typeof previousLeaderUserId !== 'string' ||
+      typeof newLeaderUserId !== 'string' ||
+      typeof previousNewLeaderRole !== 'string'
+    ) {
+      return res.status(400).json({ error: 'Invalid revert payload' });
+    }
+
+    const result = await projectsService.revertProjectLeadership(projectId, req.user.id, {
+      previousLeaderUserId,
+      newLeaderUserId,
+      previousNewLeaderRole,
+    });
+
+    if (result.error) {
+      return res.status(result.status || 500).json({ error: result.error });
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('projects.controller – revertLeadershipTransfer error:', err);
+    return res.status(500).json({ error: 'Failed to revert leadership transfer' });
+  }
+}
+
+async function transferMainAdviser(req, res) {
+  try {
+    const projectId = req.params.id;
+    const memberId = req.body?.memberId;
+    if (typeof memberId !== 'string' || !memberId.trim()) {
+      return res.status(400).json({ error: 'memberId is required' });
+    }
+
+    const result = await projectsService.transferMainAdviser(
+      projectId,
+      req.user.id,
+      memberId,
+    );
+
+    if (result.error) {
+      return res.status(result.status || 500).json({ error: result.error });
+    }
+
+    return res.json({
+      success: true,
+      revert: result.revert,
+    });
+  } catch (err) {
+    console.error('projects.controller – transferMainAdviser error:', err);
+    return res.status(500).json({ error: 'Failed to transfer main adviser role' });
+  }
+}
+
+async function revertMainAdviserTransfer(req, res) {
+  try {
+    const projectId = req.params.id;
+    const { previousMainAdviserUserId, newMainAdviserUserId } = req.body || {};
+
+    if (
+      typeof previousMainAdviserUserId !== 'string' ||
+      typeof newMainAdviserUserId !== 'string'
+    ) {
+      return res.status(400).json({ error: 'Invalid revert payload' });
+    }
+
+    const result = await projectsService.revertMainAdviserTransfer(projectId, req.user.id, {
+      previousMainAdviserUserId,
+      newMainAdviserUserId,
+    });
+
+    if (result.error) {
+      return res.status(result.status || 500).json({ error: result.error });
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('projects.controller – revertMainAdviserTransfer error:', err);
+    return res.status(500).json({ error: 'Failed to revert main adviser transfer' });
+  }
+}
+
 async function crossReferenceStudies(req, res) {
   try {
     const projectId = req.params.id;
@@ -871,6 +1077,7 @@ module.exports = {
   getMeetings,
   getFiles,
   join,
+  respondJoinRequest,
   invite,
   getMyInvitations,
   respondInvitation,
@@ -882,6 +1089,11 @@ module.exports = {
   updateDetails,
   updateAbstract,
   deleteProject,
+  leaveProject,
+  transferLeadership,
+  revertLeadershipTransfer,
+  transferMainAdviser,
+  revertMainAdviserTransfer,
   findRelatedStudies,
   crossReferenceStudies,
 };

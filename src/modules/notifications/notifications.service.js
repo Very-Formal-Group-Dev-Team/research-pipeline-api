@@ -8,6 +8,9 @@ const NOTIFICATION_TYPES = new Set([
   'defense_moved',
   'event',
   'project_stage_updated',
+  'join_request',
+  'member_left',
+  'ownership_transferred',
 ]);
 
 function parseNotificationMetadata(metadata) {
@@ -225,6 +228,27 @@ async function deleteProjectInvitationNotifications({ userId, projectId, invitat
   );
 }
 
+/** Remove join-request alerts for a project leader when a request is resolved. */
+async function deleteJoinRequestNotifications({ userId, projectId, memberId, conn = null }) {
+  const queryRunner = conn || db;
+  const params = [userId, memberId, projectId];
+
+  const sql = `DELETE FROM notifications
+     WHERE user_id = ?
+       AND type = 'join_request'
+       AND (
+         JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.memberId')) = ?
+         OR JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.projectId')) = ?
+       )`;
+
+  if (conn) {
+    await conn.execute(sql, params);
+    return;
+  }
+
+  await queryRunner.query(sql, params);
+}
+
 module.exports = {
   createNotification,
   findUnreadProjectStageNotification,
@@ -233,4 +257,5 @@ module.exports = {
   markNotificationAsRead,
   markAllNotificationsAsRead,
   deleteProjectInvitationNotifications,
+  deleteJoinRequestNotifications,
 };
