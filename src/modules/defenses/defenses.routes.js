@@ -1,5 +1,5 @@
 const express = require('express');
-const { requireAuth } = require('../../middleware/auth');
+const { requireAuth, requireDashboardRole } = require('../../middleware/auth');
 const {
   postDefense,
   postDefenseProposal,
@@ -26,18 +26,18 @@ function asyncHandler(fn) {
 
 router.use(requireAuth);
 
-router.post('/', asyncHandler(postDefense));
-router.post('/propose', asyncHandler(postDefenseProposal));
+router.post('/', requireDashboardRole('adviser'), asyncHandler(postDefense));
+router.post('/propose', requireDashboardRole('adviser'), asyncHandler(postDefenseProposal));
 router.get('/me', asyncHandler(getMyDefenses));
 router.get('/my-projects', asyncHandler(getMyProjectDefenses));
 router.get('/project/:projectId', asyncHandler(getProjectMeetings));
 router.get('/:id/meeting-session', asyncHandler(getDefenseMeetingSessionHandler));
 router.put('/:id/panel-evaluations', asyncHandler(putDefensePanelEvaluations));
 router.get('/:id', asyncHandler(getMeetingById));
-router.patch('/:id', asyncHandler(patchUpdateMeeting));
-router.patch('/:id/complete', asyncHandler(patchCompleteMeeting));
-router.patch('/:id/restore', asyncHandler(patchRestoreMeeting));
-router.patch('/:id/cancel', asyncHandler(patchCancelDefense));
-router.patch('/:id/reschedule', asyncHandler(patchRescheduleDefense));
+router.patch('/:id', requireDashboardRole('adviser'), asyncHandler(patchUpdateMeeting));
+router.patch('/:id/complete', requireDashboardRole('adviser'), asyncHandler(patchCompleteMeeting));
+router.patch('/:id/restore', requireDashboardRole('adviser'), asyncHandler(patchRestoreMeeting));
+router.patch('/:id/cancel', requireDashboardRole('adviser'), asyncHandler(patchCancelDefense));
+router.patch('/:id/reschedule', requireDashboardRole('adviser'), asyncHandler(patchRescheduleDefense));
 
 module.exports = router;
