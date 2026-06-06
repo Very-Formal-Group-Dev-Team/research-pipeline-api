@@ -1,5 +1,5 @@
 const express = require('express');
-const { requireAuth } = require('../../middleware/auth');
+const { requireAuth, requireDashboardRole } = require('../../middleware/auth');
 const { createDocumentUpload } = require('../../middleware/multer');
 const controller = require('./projects.controller');
 const paperVersionsRouter = require('../paper_versions/paper_versions.routes');
@@ -30,8 +30,8 @@ router.get('/code/:code', asyncHandler(controller.getByCode));
 router.get('/invitations', asyncHandler(controller.getMyInvitations));
 router.post('/invitations/:invitationId/respond', asyncHandler(controller.respondInvitation));
 router.get('/', asyncHandler(controller.list));
-router.get('/advised/stats', asyncHandler(controller.getAdvisedStats));
-router.get('/advised', asyncHandler(controller.listAdvised));
+router.get('/advised/stats', requireDashboardRole('adviser'), asyncHandler(controller.getAdvisedStats));
+router.get('/advised', requireDashboardRole('adviser'), asyncHandler(controller.listAdvised));
 router.get('/:id', asyncHandler(controller.getOne));
 router.get('/:id/members', asyncHandler(controller.getMembers));
 router.get('/:id/meetings', asyncHandler(controller.getMeetings));

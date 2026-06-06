@@ -603,6 +603,24 @@ async function createDefense(userId, payload) {
       return { error: 'Project not found', status: 404 };
     }
 
+    if (payload.booking_side === 'adviser') {
+      const [adviserRows] = await conn.execute(
+        `SELECT 1
+         FROM project_members
+         WHERE project_id = ?
+           AND user_id = ?
+           AND role = 'adviser'
+           AND status = 'accepted'
+         LIMIT 1`,
+        [project_id, userId],
+      );
+
+      if (!adviserRows.length) {
+        await conn.rollback();
+        return { error: 'Only the project adviser can book this meeting', status: 403 };
+      }
+    }
+
     const scheduleCheck = await validateScheduleConstraints({
       projectId: project_id,
       startAt: normalizedSchedule.dbValue,

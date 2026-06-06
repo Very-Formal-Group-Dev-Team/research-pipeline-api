@@ -264,7 +264,13 @@ async function listAdvised(req, res) {
 
 async function getOne(req, res) {
   try {
-    const project = await projectsService.getProjectById(req.params.id);
+    const projectId = req.params.id;
+    const isMember = await projectsService.isAcceptedProjectMember(projectId, req.user.id);
+    if (!isMember) {
+      return res.status(403).json({ error: 'You are not a member of this project' });
+    }
+
+    const project = await projectsService.getProjectById(projectId);
     if (!project) {
       return res.status(404).json({ error: 'Project not found' });
     }
@@ -300,7 +306,13 @@ async function getByCode(req, res) {
 
 async function getMembers(req, res) {
   try {
-    const members = await projectsService.getProjectMembers(req.params.id);
+    const projectId = req.params.id;
+    const isMember = await projectsService.isAcceptedProjectMember(projectId, req.user.id);
+    if (!isMember) {
+      return res.status(403).json({ error: 'You are not a member of this project' });
+    }
+
+    const members = await projectsService.getProjectMembers(projectId);
     return res.json(members);
   } catch (err) {
     console.error('projects.controller – getMembers error:', err);
@@ -310,7 +322,13 @@ async function getMembers(req, res) {
 
 async function getFiles(req, res) {
   try {
-    const files = await projectsService.getProjectFiles(req.params.id);
+    const projectId = req.params.id;
+    const isMember = await projectsService.isAcceptedProjectMember(projectId, req.user.id);
+    if (!isMember) {
+      return res.status(403).json({ error: 'You are not a member of this project' });
+    }
+
+    const files = await projectsService.getProjectFiles(projectId);
     return res.json(files);
   } catch (err) {
     console.error('projects.controller – getFiles error:', err);
@@ -465,7 +483,13 @@ async function respondInvitation(req, res) {
 
 async function getInvitations(req, res) {
   try {
-    const invitations = await projectsService.getProjectInvitations(req.params.id);
+    const projectId = req.params.id;
+    const isMember = await projectsService.isAcceptedProjectMember(projectId, req.user.id);
+    if (!isMember) {
+      return res.status(403).json({ error: 'You are not a member of this project' });
+    }
+
+    const invitations = await projectsService.getProjectInvitations(projectId);
     return res.json(invitations);
   } catch (err) {
     console.error('projects.controller – getInvitations error:', err);
