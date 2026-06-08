@@ -1,6 +1,14 @@
 const path = require('path');
 const fs = require('fs');
 
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
+const {
+  resolveWhisperPython,
+  formatWhisperPythonLabel,
+  isWhisperPythonReady,
+} = require('./whisperPython');
+
 const isProduction = process.env.NODE_ENV === 'production';
 
 function normalizeOrigin(value) {
@@ -86,6 +94,41 @@ function validateProductionEnv() {
 
 const jitsiBaseUrl = (process.env.JITSI_BASE_URL || 'https://localhost:8443').trim().replace(/\/+$/, '');
 
+function normalizeServiceUrl(value) {
+  if (!value) return null;
+  const raw = String(value).trim().replace(/\/+$/, '');
+  if (!raw) return null;
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
+  try {
+    const parsed = new URL(withProtocol);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+const transcriptionModelUrl = normalizeServiceUrl(process.env.TRANSCRIPTION_MODEL_URL);
+const whisperModel = (process.env.WHISPER_MODEL || 'base').trim() || 'base';
+const whisperPython = resolveWhisperPython();
+const whisperPythonLabel = formatWhisperPythonLabel(whisperPython);
+const whisperPythonReady = whisperPython ? isWhisperPythonReady(whisperPython) : false;
+const whisperPythonPath = whisperPython?.command || null;
+
+if (!isProduction) {
+  if (transcriptionModelUrl) {
+    console.log(`[whisper] Using transcription service: ${transcriptionModelUrl}`);
+  } else if (whisperPythonReady && whisperPythonPath) {
+    console.log(`[whisper] Using local Python: ${whisperPythonPath}`);
+  } else {
+    const installHint = process.env.WHISPER_PYTHON?.trim() || (process.platform === 'win32' ? 'python3' : 'python3');
+    console.warn(`[whisper] Transcription unavailable. Set TRANSCRIPTION_MODEL_URL or install faster-whisper with: ${installHint} -m pip install -r scripts/requirements-transcription.txt`);
+    if (process.env.WHISPER_PYTHON) {
+      console.warn(`[whisper] WHISPER_PYTHON=${process.env.WHISPER_PYTHON} did not pass validation.`);
+    }
+  }
+}
+
 module.exports = {
   isProduction,
   normalizeOrigin,
@@ -93,5 +136,11 @@ module.exports = {
   uploadBase,
   trustProxy,
   jitsiBaseUrl,
+  transcriptionModelUrl,
+  whisperModel,
+  whisperPython,
+  whisperPythonLabel,
+  whisperPythonPath,
+  whisperPythonReady,
   validateProductionEnv,
 };

@@ -9,6 +9,16 @@ const {
   getMeetingById,
   getDefenseMeetingSessionHandler,
   putDefensePanelEvaluations,
+  getTranscriptionHandler,
+  getTranscriptionDownloadHandler,
+  postStartRecording,
+  postCompleteRecording,
+  postTranscribeRecording,
+  deleteRecordingHandler,
+  getScheduleRecordings,
+  getMyRecordings,
+  getRecordingDetailHandler,
+  uploadRecordingFiles,
   patchUpdateMeeting,
   patchCompleteMeeting,
   patchRestoreMeeting,
@@ -28,11 +38,24 @@ router.use(requireAuth);
 
 router.post('/', requireDashboardRole('adviser'), asyncHandler(postDefense));
 router.post('/propose', requireDashboardRole('adviser'), asyncHandler(postDefenseProposal));
+router.get('/recordings/mine', asyncHandler(getMyRecordings));
 router.get('/me', asyncHandler(getMyDefenses));
 router.get('/my-projects', asyncHandler(getMyProjectDefenses));
 router.get('/project/:projectId', asyncHandler(getProjectMeetings));
 router.get('/:id/meeting-session', asyncHandler(getDefenseMeetingSessionHandler));
 router.put('/:id/panel-evaluations', asyncHandler(putDefensePanelEvaluations));
+router.get('/:id/transcription/download', asyncHandler(getTranscriptionDownloadHandler));
+router.get('/:id/transcription', asyncHandler(getTranscriptionHandler));
+router.get('/:id/recordings', asyncHandler(getScheduleRecordings));
+router.get('/:id/recordings/:recordingId', asyncHandler(getRecordingDetailHandler));
+router.post('/:id/recordings/start', asyncHandler(postStartRecording));
+router.post(
+  '/:id/recordings/:recordingId/complete',
+  uploadRecordingFiles,
+  asyncHandler(postCompleteRecording),
+);
+router.post('/:id/recordings/:recordingId/transcribe', asyncHandler(postTranscribeRecording));
+router.delete('/:id/recordings/:recordingId', asyncHandler(deleteRecordingHandler));
 router.get('/:id', asyncHandler(getMeetingById));
 router.patch('/:id', requireDashboardRole('adviser'), asyncHandler(patchUpdateMeeting));
 router.patch('/:id/complete', requireDashboardRole('adviser'), asyncHandler(patchCompleteMeeting));

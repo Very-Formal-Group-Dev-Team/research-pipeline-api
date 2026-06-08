@@ -1936,4 +1936,5 @@ module.exports = {
   getScheduleWindow,
   getDefenseMeetingSession,
   saveDefensePanelEvaluations,
+  assertDefenseMeetingAccess,
 };
