@@ -14,6 +14,20 @@ const {
   getDefenseMeetingSession,
   saveDefensePanelEvaluations,
 } = require('./defenses.service');
+const {
+  getTranscriptionHandler,
+  getTranscriptionDownloadHandler,
+} = require('../transcriptions/transcriptions.controller');
+const {
+  postStartRecording,
+  postCompleteRecording,
+  postTranscribeRecording,
+  deleteRecordingHandler,
+  getScheduleRecordings,
+  getMyRecordings,
+  getRecordingDetailHandler,
+  uploadRecordingFiles,
+} = require('../recordings/recordings.controller');
 
 async function postDefense(req, res) {
   const body = req.body || {};
@@ -197,6 +211,16 @@ module.exports = {
   getMeetingById,
   getDefenseMeetingSessionHandler,
   putDefensePanelEvaluations,
+  getTranscriptionHandler,
+  getTranscriptionDownloadHandler,
+  postStartRecording,
+  postCompleteRecording,
+  postTranscribeRecording,
+  deleteRecordingHandler,
+  getScheduleRecordings,
+  getMyRecordings,
+  getRecordingDetailHandler,
+  uploadRecordingFiles,
   patchUpdateMeeting,
   patchCompleteMeeting,
   patchRestoreMeeting,

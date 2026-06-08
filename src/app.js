@@ -23,6 +23,7 @@ const scheduleRouter = require('./modules/schedule/schedule.routes');
 const fileOperationsRouter = require('./modules/file_operations/file_operations.routes');
 const publicRouter = require('./modules/public/public.routes');
 const institutionsRouter = require('./modules/institutions/institutions.routes');
+const micRouter = require('./modules/mic/mic.routes');
 const app = express();
 
 app.disable('x-powered-by');
@@ -126,6 +127,7 @@ app.use('/api/upload', uploadRouter);
 app.use('/api/projects', projectsRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/defenses', defensesRouter);
+app.use('/api/mic', micRouter);
 app.use('/api/schedule', scheduleRouter);
 app.use('/api/coordinator', coordinatorRouter);
 app.use('/api/adviser', adviserRouter);
