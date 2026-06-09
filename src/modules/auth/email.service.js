@@ -72,6 +72,9 @@ async function sendVerificationEmail(to, token) {
       user: smtp.user,
       pass: smtp.pass,
     },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
   });
 
   await transporter.sendMail({
