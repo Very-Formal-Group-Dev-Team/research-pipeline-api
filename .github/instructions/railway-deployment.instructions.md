@@ -17,7 +17,7 @@ description: >
   "start": "node src/server.js"
 }
 ```
-Railway runs `npm start` (or `pnpm start`) by default. No change needed.
+Railway runs `npm start` by default. No change needed.
 
 ### PORT Binding
 `src/server.js` already reads `process.env.PORT`:
@@ -128,7 +128,7 @@ is physically stored on disk.
 ### Connect Repository
 1. In Railway, click **New Project → Deploy from GitHub repo**.
 2. Select `student-research-api` from the list.
-3. Railway auto-detects Node.js and uses `pnpm start` (or `npm start`).
+3. Railway auto-detects Node.js and uses `npm start`.
 
 ### Set Environment Variables
 In **Railway → Variables**, add all of the following:
@@ -170,11 +170,11 @@ Railway does not run migrations automatically. After the first deploy:
 1. Open the Railway service **Shell** tab (or use Railway CLI).
 2. Run:
    ```sh
-   pnpm run migrate
+   npm run migrate
    ```
    Or set a **Deploy Command** (one-time) override to:
    ```sh
-   pnpm run migrate && pnpm run start
+   npm run migrate && npm start
    ```
    Remove the override after the first successful run.
 

@@ -494,4 +494,5 @@ module.exports = {
   listScheduleRecordings,
   listAccessibleRecordings,
   getRecordingDetail,
+  getRecordingById,
 };

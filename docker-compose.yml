@@ -59,16 +59,10 @@ services:
       WHISPER_MODEL: ${WHISPER_MODEL:-base}
       UPLOAD_ROOT: /uploads
     volumes:
-      - ./uploads:/uploads
+      - /opt/archivum-data/uploads:/app/uploads
     networks:
       - backend
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8001/health || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
 
   # ──────────────────────────────────────────────
   # Node.js API  (service name = "app" so you can
@@ -98,6 +92,7 @@ services:
       JITSI_BASE_URL: ${JITSI_BASE_URL:-https://localhost:8443}
       WHISPER_MODEL: ${WHISPER_MODEL:-base}
       WHISPER_PYTHON: ${WHISPER_PYTHON:-}
+      UPLOAD_PATH: /app/uploads
     ports:
       - "${API_PORT:-4000}:4000"
     depends_on:
@@ -106,14 +101,14 @@ services:
       keyword-model:
         condition: service_started
       transcription-model:
-        condition: service_healthy
+        condition: service_started
     networks:
       - backend
     restart: unless-stopped
     volumes:
       - .:/app
       - /app/node_modules
-      - ./uploads:/app/uploads
+      - /opt/archivum-data/uploads:/app/uploads
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/ || exit 1"]
       interval: 15s
