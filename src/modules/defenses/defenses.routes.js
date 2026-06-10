@@ -19,6 +19,11 @@ const {
   getMyRecordings,
   getRecordingDetailHandler,
   uploadRecordingFiles,
+  getTranscriptionEditHandler,
+  putTranscriptionEditHandler,
+  postMergeTranscriptionLinesHandler,
+  postAssignTranscriptionSpeakerHandler,
+  getTranscriptionEditDownloadHandler,
   patchUpdateMeeting,
   patchCompleteMeeting,
   patchRestoreMeeting,
@@ -47,6 +52,11 @@ router.put('/:id/panel-evaluations', asyncHandler(putDefensePanelEvaluations));
 router.get('/:id/transcription/download', asyncHandler(getTranscriptionDownloadHandler));
 router.get('/:id/transcription', asyncHandler(getTranscriptionHandler));
 router.get('/:id/recordings', asyncHandler(getScheduleRecordings));
+router.post('/:id/recordings/:recordingId/transcription-edit/merge', asyncHandler(postMergeTranscriptionLinesHandler));
+router.post('/:id/recordings/:recordingId/transcription-edit/assign', asyncHandler(postAssignTranscriptionSpeakerHandler));
+router.get('/:id/recordings/:recordingId/transcription-edit/download', asyncHandler(getTranscriptionEditDownloadHandler));
+router.get('/:id/recordings/:recordingId/transcription-edit', asyncHandler(getTranscriptionEditHandler));
+router.put('/:id/recordings/:recordingId/transcription-edit', asyncHandler(putTranscriptionEditHandler));
 router.get('/:id/recordings/:recordingId', asyncHandler(getRecordingDetailHandler));
 router.post('/:id/recordings/start', asyncHandler(postStartRecording));
 router.post(

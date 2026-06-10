@@ -29,6 +29,14 @@ const {
   uploadRecordingFiles,
 } = require('../recordings/recordings.controller');
 
+const {
+  getTranscriptionEditHandler,
+  putTranscriptionEditHandler,
+  postMergeTranscriptionLinesHandler,
+  postAssignTranscriptionSpeakerHandler,
+  getTranscriptionEditDownloadHandler,
+} = require('../recordings/transcription-edits.controller');
+
 async function postDefense(req, res) {
   const body = req.body || {};
   const waitForSlotRaw = body.wait_for_slot ?? body.waitForSlot;
@@ -221,6 +229,11 @@ module.exports = {
   getMyRecordings,
   getRecordingDetailHandler,
   uploadRecordingFiles,
+  getTranscriptionEditHandler,
+  putTranscriptionEditHandler,
+  postMergeTranscriptionLinesHandler,
+  postAssignTranscriptionSpeakerHandler,
+  getTranscriptionEditDownloadHandler,
   patchUpdateMeeting,
   patchCompleteMeeting,
   patchRestoreMeeting,

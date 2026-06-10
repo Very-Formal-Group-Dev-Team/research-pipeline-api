@@ -1,7 +1,7 @@
 # Student Research Portal Backend Instructions
 
 ## What to optimize for
-- This repo is an Express 5 + MySQL API on Node.js 20+ with pnpm.
+- This repo is an Express 5 + MySQL API on Node.js 20+ with npm.
 - Keep changes aligned with the modular `src/modules/<domain>/` layout.
 - Prefer small, local edits that preserve the current route, controller, and service split.
 
@@ -15,11 +15,11 @@
 - Keep migrations idempotent and zero-padded in `migrations/`.
 
 ## Commands
-- Install dependencies with `pnpm install`.
-- Run the API locally with `pnpm dev`.
-- Lint code with `pnpm lint`; auto-fix with `pnpm lint:fix`.
-- Run migrations with `pnpm migrate`.
-- Start production mode with `pnpm start`.
+- Install dependencies with `npm install`.
+- Run the API locally with `npm run dev`.
+- Lint code with `npm run lint`; auto-fix with `npm run lint:fix`.
+- Run migrations with `npm run migrate`.
+- Start production mode with `npm start`.
 - Use the Docker scripts in `package.json` when working on deployment or local parity.
 
 ## Before changing behavior
