@@ -5,7 +5,7 @@
 services:
   jitsi-web:
     image: jitsi/web:${JITSI_IMAGE_VERSION:-stable}
-    container_name: student-research-jitsi-web
+    container_name: archivum-jitsi-web
     restart: unless-stopped
     ports:
       - '${HTTP_PORT:-8000}:80'
@@ -33,7 +33,7 @@ services:
 
   jitsi-prosody:
     image: jitsi/prosody:${JITSI_IMAGE_VERSION:-stable}
-    container_name: student-research-jitsi-prosody
+    container_name: archivum-jitsi-prosody
     restart: unless-stopped
     expose:
       - '5222'
@@ -64,7 +64,7 @@ services:
 
   jitsi-jicofo:
     image: jitsi/jicofo:${JITSI_IMAGE_VERSION:-stable}
-    container_name: student-research-jitsi-jicofo
+    container_name: archivum-jitsi-jicofo
     restart: unless-stopped
     volumes:
       - ${CONFIG}/jicofo:/config:Z
@@ -81,7 +81,7 @@ services:
 
   jitsi-jvb:
     image: jitsi/jvb:${JITSI_IMAGE_VERSION:-stable}
-    container_name: student-research-jitsi-jvb
+    container_name: archivum-jitsi-jvb
     restart: unless-stopped
     ports:
       - '${JVB_PORT:-10000}:${JVB_PORT:-10000}/udp'
