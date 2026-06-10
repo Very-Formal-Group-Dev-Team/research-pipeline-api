@@ -173,7 +173,7 @@ async function processAudioUpload(userId, scheduleId, filePath, deviceKey) {
     const message = err.message || 'Transcription failed';
     if (message.includes("doesn't exist") || message.includes('ER_NO_SUCH_TABLE')) {
       return {
-        error: 'Transcription table missing. Run database migrations (pnpm migrate).',
+        error: 'Transcription table missing. Run database migrations (npm run migrate).',
         status: 500,
       };
     }
