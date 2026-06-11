@@ -10,7 +10,7 @@ services:
   # ──────────────────────────────────────────────
   db:
     image: mysql:8.0
-    container_name: student-research-db
+    container_name: archivum-db
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
       MYSQL_DATABASE: ${DB_NAME:-student_research}
@@ -42,7 +42,7 @@ services:
     build:
       context: .
       dockerfile: models/keyword_model/Dockerfile
-    container_name: student-research-keyword-model
+    container_name: archivum-keyword-model
     networks:
       - backend
     restart: unless-stopped
@@ -54,7 +54,7 @@ services:
     build:
       context: .
       dockerfile: models/transcription_model/Dockerfile
-    container_name: student-research-transcription-model
+    container_name: archivum-transcription-model
     environment:
       WHISPER_MODEL: ${WHISPER_MODEL:-base}
       UPLOAD_ROOT: /uploads
@@ -72,7 +72,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: student-research-app
+    container_name: archivum-backend
     init: true # proper PID-1 signal forwarding
     environment:
       NODE_ENV: ${NODE_ENV:-development}
