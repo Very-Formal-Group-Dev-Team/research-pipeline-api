@@ -14,6 +14,8 @@ services:
       - ${CONFIG}/web:/config:Z
       - ${CONFIG}/web/crontabs:/var/spool/cron/crontabs:Z
       - ${CONFIG}/transcripts:/usr/share/jitsi-meet/transcripts:Z
+      - ./branding/body.html:/usr/share/jitsi-meet/body.html:ro
+      - ./branding/archivum-jitsi.css:/usr/share/jitsi-meet/css/archivum-jitsi.css:ro
     env_file:
       - .env
     environment:

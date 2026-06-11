@@ -1,0 +1,256 @@
+/**
+ * Archivum boxy overrides for Jitsi Meet UI elements outside the React theme tokens.
+ * Radii match research-pipeline-web app/globals.css `.dashboard-ui` (sm/md/lg).
+ */
+:root {
+  --archivum-jitsi-radius-sm: 2px;
+  --archivum-jitsi-radius-md: 3px;
+  --archivum-jitsi-radius-lg: 4px;
+}
+
+.new-toolbox,
+.toolbox-content,
+.toolbox-content-wrapper,
+.premeeting-screen,
+.premeeting-login-input,
+.modal-dialog,
+.chat-conversation,
+.chat-dialog,
+.filmstrip,
+#keyboard-shortcuts,
+.reactions-menu,
+.invite-more-dialog,
+.notification,
+.popover,
+.context-menu,
+.dropdown-menu {
+  border-radius: var(--archivum-jitsi-radius-md) !important;
+}
+
+.videocontainer,
+.large-video-container,
+#largeVideoWrapper,
+#largeVideoContainer,
+.filmstrip__videos .videocontainer,
+.prejoin-preview-status,
+.prejoin-preview-dropdown-container {
+  border-radius: var(--archivum-jitsi-radius-sm) !important;
+}
+
+.new-toolbox button,
+.toolbox-icon,
+.hangup-button,
+.premeeting-btn,
+.action-btn,
+.copy-button,
+.prejoin-btn {
+  border-radius: var(--archivum-jitsi-radius-sm) !important;
+}
+
+input[type='text'],
+input[type='email'],
+textarea,
+select {
+  border-radius: var(--archivum-jitsi-radius-sm) !important;
+}
+
+/* Hide Jitsi branding on the main stage and welcome screens */
+.watermark,
+.leftwatermark,
+.rightwatermark,
+.poweredby,
+a.poweredby {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+/* Archivum renders its own top control bar — hide Jitsi's duplicate chrome */
+.new-toolbox,
+.toolbox-content,
+.toolbox-content-wrapper,
+.toolbox-content-items,
+.subject,
+.subject-info-container {
+  display: none !important;
+}
+
+/* Archivum control bar exposes performance settings — hide Jitsi's top-center gauge */
+#videoResolutionLabel,
+#videoResolutionLabel *,
+.current-video-quality,
+.audio-only,
+.subject-info-container,
+.conference-info,
+[class*='video-quality-label'],
+[class*='VideoQualityLabel'] {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+/*
+ * Archivum layout: main video fills the left, chat / people panels dock on the right.
+ * The portal control bar sits outside this iframe — content here starts at y=0.
+ */
+#layout_wrapper {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: stretch !important;
+  height: 100% !important;
+  min-height: 100% !important;
+}
+
+#videoconference_page {
+  order: 1 !important;
+  flex: 1 1 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  margin: 0 !important;
+}
+
+/*
+ * Participant thumbnails float over the main stage on the left.
+ * The stage always fills #videospace — no reserved black column.
+ */
+#videospace {
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+.vertical-filmstrip #largeVideoContainer,
+.stage-filmstrip #largeVideoContainer {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+}
+
+.vertical-filmstrip .filmstrip,
+.stage-filmstrip .filmstrip {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: auto !important;
+  bottom: auto !important;
+  height: auto !important;
+  max-height: 100% !important;
+  width: auto !important;
+  margin: 0 !important;
+  z-index: 3 !important;
+  background: transparent !important;
+  pointer-events: none !important;
+}
+
+.vertical-filmstrip .filmstrip > *,
+.stage-filmstrip .filmstrip > * {
+  pointer-events: auto !important;
+}
+
+/* Collapsed: slide off left but keep the toggle peeking at the edge. */
+.vertical-filmstrip .filmstrip.hidden,
+.stage-filmstrip .filmstrip.hidden {
+  right: auto !important;
+  transform: translateX(calc(-100% + 30px)) !important;
+}
+
+.vertical-filmstrip .resizable-filmstrip,
+.stage-filmstrip .resizable-filmstrip {
+  flex-direction: row !important;
+  align-items: flex-start !important;
+  height: auto !important;
+  max-height: 100% !important;
+  background: transparent !important;
+}
+
+.vertical-filmstrip .resizable-filmstrip:hover,
+.stage-filmstrip .resizable-filmstrip:hover,
+.vertical-filmstrip .filmstrip.filmstripBackground,
+.stage-filmstrip .filmstrip.filmstripBackground {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+.vertical-filmstrip .resizable-filmstrip .dragHandleContainer,
+.stage-filmstrip .resizable-filmstrip .dragHandleContainer {
+  order: 2 !important;
+  align-self: stretch !important;
+  height: auto !important;
+  max-height: 100% !important;
+}
+
+.vertical-filmstrip .filmstrip__videos,
+.vertical-filmstrip #remoteVideos,
+.vertical-filmstrip #filmstripLocalVideo,
+.vertical-filmstrip #filmstripLocalScreenShare,
+.stage-filmstrip .filmstrip__videos,
+.stage-filmstrip #remoteVideos,
+.stage-filmstrip #filmstripLocalVideo,
+.stage-filmstrip #filmstripLocalScreenShare {
+  align-items: center !important;
+  align-self: center !important;
+  width: 100% !important;
+  right: auto !important;
+  left: auto !important;
+}
+
+.vertical-filmstrip .filmstrip .remote-videos,
+.stage-filmstrip .filmstrip .remote-videos {
+  align-items: center !important;
+  width: 100% !important;
+}
+
+.vertical-filmstrip .filmstrip .videocontainer,
+.stage-filmstrip .filmstrip .videocontainer {
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+/* Collapse toggle on the right edge of the overlay column. */
+.vertical-filmstrip .toggleFilmstripContainer,
+.stage-filmstrip .toggleFilmstripContainer {
+  left: auto !important;
+  right: calc(-24px - 2px - 4px) !important;
+  transform: rotate(90deg) !important;
+}
+
+#sideToolbarContainer {
+  order: 2 !important;
+  flex-shrink: 0 !important;
+  align-self: stretch !important;
+  position: relative !important;
+  left: auto !important;
+  right: auto !important;
+  top: auto !important;
+  margin: 0 !important;
+  height: 100% !important;
+  transition: none !important;
+}
+
+/* Legacy Jitsi builds slide chat in from the left — pin to the right instead. */
+#sideToolbarContainer.slideInExt,
+#sideToolbarContainer.slideOutExt {
+  left: auto !important;
+  right: 0 !important;
+}
+
+#sideToolbarContainer .dragHandleContainer {
+  left: 0 !important;
+  right: auto !important;
+}
+
+#participants-pane {
+  order: 2 !important;
+  flex-shrink: 0 !important;
+  align-self: stretch !important;
+  margin: 0 !important;
+  height: 100% !important;
+  z-index: 300 !important;
+}
+
+/* Filmstrip thumbnail menus are portaled to body — keep above the overlay column */
+body > div:has(.popover .popover-content) {
+  z-index: 500 !important;
+}

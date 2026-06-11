@@ -1,0 +1,330 @@
+<link rel="stylesheet" href="css/archivum-jitsi.css?v=8" />
+<script>
+  (function () {
+    function syncOverlayFilmstrip(el) {
+      if (!el || !el.classList.contains('filmstrip')) {
+        return;
+      }
+
+      var page = el.closest('#videoconference_page');
+      if (!page || (!page.classList.contains('vertical-filmstrip') && !page.classList.contains('stage-filmstrip'))) {
+        return;
+      }
+
+      var largeVideo = page.querySelector('#largeVideoContainer');
+      if (largeVideo) {
+        largeVideo.style.width = '100%';
+        largeVideo.style.height = '100%';
+        largeVideo.style.left = '0';
+        largeVideo.style.top = '0';
+      }
+
+      if (el.style.right && el.style.right.charAt(0) === '-') {
+        el.style.right = '';
+      }
+
+      if (!el.classList.contains('hidden')) {
+        el.style.left = '0';
+      }
+    }
+
+    function watchFilmstrip(el) {
+      if (!el || el.dataset.archivumFilmstripLeft === '1') {
+        return;
+      }
+
+      el.dataset.archivumFilmstripLeft = '1';
+      syncOverlayFilmstrip(el);
+
+      new MutationObserver(function () {
+        syncOverlayFilmstrip(el);
+      }).observe(el, { attributes: true, attributeFilter: ['style', 'class'] });
+    }
+
+    function watchLargeVideo(el) {
+      if (!el || el.dataset.archivumLargeVideoFull === '1') {
+        return;
+      }
+
+      el.dataset.archivumLargeVideoFull = '1';
+      el.style.width = '100%';
+      el.style.height = '100%';
+      el.style.left = '0';
+      el.style.top = '0';
+
+      new MutationObserver(function () {
+        el.style.width = '100%';
+        el.style.height = '100%';
+        el.style.left = '0';
+        el.style.top = '0';
+      }).observe(el, { attributes: true, attributeFilter: ['style'] });
+    }
+
+    function scanFilmstrips() {
+      document
+        .querySelectorAll('.vertical-filmstrip .filmstrip, .stage-filmstrip .filmstrip')
+        .forEach(watchFilmstrip);
+
+      document
+        .querySelectorAll('.vertical-filmstrip #largeVideoContainer, .stage-filmstrip #largeVideoContainer')
+        .forEach(watchLargeVideo);
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', scanFilmstrips);
+    } else {
+      scanFilmstrips();
+    }
+
+    new MutationObserver(scanFilmstrips).observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
+
+  })();
+
+  (function () {
+    var ARCHIVUM_SOURCE = 'archivum-meeting';
+
+    function sendReaction(reaction) {
+      var store = window.APP && window.APP.store;
+      if (!store) {
+        return false;
+      }
+
+      store.dispatch({ type: 'ADD_REACTION_BUFFER', reaction: reaction });
+      store.dispatch({ type: 'FLUSH_REACTION_BUFFER' });
+      return true;
+    }
+
+    window.addEventListener('message', function (event) {
+      if (event.source !== window.parent) {
+        return;
+      }
+
+      var data = event.data;
+      if (!data || data.source !== ARCHIVUM_SOURCE || data.command !== 'send-reaction') {
+        return;
+      }
+
+      sendReaction(data.reaction);
+    });
+  })();
+
+  (function () {
+    var CHAT_MIN_WIDTH = 315;
+    var VIDEO_SPACE_MIN_SIZE = 500;
+    var chatResizeState = null;
+
+    function getStore() {
+      return window.APP && window.APP.store;
+    }
+
+    function getCurrentChatWidth() {
+      var store = getStore();
+      if (!store) {
+        return CHAT_MIN_WIDTH;
+      }
+
+      var width = store.getState()['features/chat'].width;
+      return (width && width.current) || CHAT_MIN_WIDTH;
+    }
+
+    function getMaxChatWidth() {
+      var store = getStore();
+      var clientWidth = window.innerWidth;
+
+      if (store) {
+        clientWidth = store.getState()['features/base/responsive-ui'].clientWidth || clientWidth;
+      }
+
+      return Math.max(clientWidth - VIDEO_SPACE_MIN_SIZE, CHAT_MIN_WIDTH);
+    }
+
+    function setChatWidth(width) {
+      var store = getStore();
+      if (!store) {
+        return;
+      }
+
+      store.dispatch({ type: 'SET_USER_CHAT_WIDTH', width: width });
+    }
+
+    function setChatResizing(resizing) {
+      var store = getStore();
+      if (!store) {
+        return;
+      }
+
+      store.dispatch({ type: 'SET_CHAT_IS_RESIZING', resizing: resizing });
+    }
+
+    function onChatResizePointerDown(event) {
+      var handle = event.target.closest('#sideToolbarContainer .dragHandleContainer');
+      if (!handle) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
+      handle.setPointerCapture(event.pointerId);
+
+      chatResizeState = {
+        startX: event.clientX,
+        startWidth: getCurrentChatWidth(),
+      };
+
+      setChatResizing(true);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    }
+
+    function onChatResizePointerMove(event) {
+      if (!chatResizeState) {
+        return;
+      }
+
+      // Chat is docked on the right with the handle on its left edge — invert Jitsi's delta.
+      var diff = event.clientX - chatResizeState.startX;
+      var newWidth = Math.max(
+        CHAT_MIN_WIDTH,
+        Math.min(chatResizeState.startWidth - diff, getMaxChatWidth()),
+      );
+
+      if (newWidth !== getCurrentChatWidth()) {
+        setChatWidth(newWidth);
+      }
+    }
+
+    function onChatResizePointerUp() {
+      if (!chatResizeState) {
+        return;
+      }
+
+      chatResizeState = null;
+      setChatResizing(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+
+    document.addEventListener('pointerdown', onChatResizePointerDown, true);
+    document.addEventListener('pointermove', onChatResizePointerMove, true);
+    document.addEventListener('pointerup', onChatResizePointerUp, true);
+  })();
+
+  (function () {
+    var activeFilmstripMenuTrigger = null;
+
+    function getStore() {
+      return window.APP && window.APP.store;
+    }
+
+    function isInFilmstrip(el) {
+      return Boolean(el && el.closest('.vertical-filmstrip, .stage-filmstrip'));
+    }
+
+    function applyRightStartPosition(portal, trigger, content) {
+      var bounds = trigger.getBoundingClientRect();
+      var size = content.getBoundingClientRect();
+      var height = size.height || 120;
+      var top = Math.min(bounds.y, window.innerHeight - height - 20);
+
+      portal.style.position = 'fixed';
+      portal.style.left = bounds.x + bounds.width + 'px';
+      portal.style.right = 'auto';
+      portal.style.top = top + 'px';
+      portal.style.bottom = 'auto';
+      portal.style.visibility = 'visible';
+
+      content.classList.remove('left');
+      content.classList.add('right');
+    }
+
+    function repositionFilmstripMenuPortal(portal) {
+      var trigger = activeFilmstripMenuTrigger;
+      var content = portal.querySelector('.popover-content.left');
+
+      if (!trigger || !content || !isInFilmstrip(trigger)) {
+        return;
+      }
+
+      applyRightStartPosition(portal, trigger, content);
+    }
+
+    function scheduleReposition(portal) {
+      repositionFilmstripMenuPortal(portal);
+      window.requestAnimationFrame(function () {
+        repositionFilmstripMenuPortal(portal);
+      });
+      window.setTimeout(function () {
+        repositionFilmstripMenuPortal(portal);
+      }, 120);
+    }
+
+    function isMenuPortal(node) {
+      return node.nodeType === 1 && node.querySelector && node.querySelector('.popover-content');
+    }
+
+    document.addEventListener(
+      'pointerdown',
+      function (event) {
+        var trigger = event.target.closest('[id$="menu-trigger"]');
+        if (trigger && isInFilmstrip(trigger)) {
+          activeFilmstripMenuTrigger = trigger;
+          return;
+        }
+
+        if (!event.target.closest('.popover-content')) {
+          activeFilmstripMenuTrigger = null;
+        }
+      },
+      true,
+    );
+
+    new MutationObserver(function (mutations) {
+      mutations.forEach(function (mutation) {
+        if (mutation.type === 'childList') {
+          mutation.addedNodes.forEach(function (node) {
+            if (isMenuPortal(node)) {
+              scheduleReposition(node);
+            }
+          });
+          return;
+        }
+
+        if (mutation.type === 'attributes' && mutation.attributeName === 'style') {
+          var target = mutation.target;
+          if (isMenuPortal(target)) {
+            scheduleReposition(target);
+          }
+        }
+      });
+    }).observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['style'],
+    });
+
+    // Recover from a prior "pin to stage" session that left the main stage black.
+    function clearStageParticipants() {
+      var store = getStore();
+      if (!store) {
+        return false;
+      }
+
+      store.dispatch({ type: 'CLEAR_STAGE_PARTICIPANTS' });
+      return true;
+    }
+
+    var stageResetAttempts = 0;
+    var stageResetTimer = window.setInterval(function () {
+      stageResetAttempts += 1;
+      if (clearStageParticipants() || stageResetAttempts > 50) {
+        window.clearInterval(stageResetTimer);
+      }
+    }, 200);
+  })();
+</script>
