@@ -57,7 +57,7 @@ services:
     container_name: archivum-transcription-model
     environment:
       WHISPER_MODEL: ${WHISPER_MODEL:-base}
-      UPLOAD_ROOT: /uploads
+      UPLOAD_ROOT: /app/uploads
     volumes:
       - /opt/archivum-data/uploads:/app/uploads
     networks:
