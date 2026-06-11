@@ -206,6 +206,23 @@ a.poweredby {
 .stage-filmstrip .filmstrip .videocontainer {
   margin-left: auto !important;
   margin-right: auto !important;
+  overflow: visible !important;
+}
+
+/*
+ * Default Jitsi thumbnail menus open to the left of the three-dot trigger and get
+ * clipped by the left overlay column — anchor them to the thumbnail's right edge.
+ */
+.vertical-filmstrip .filmstrip .videocontainer .popover,
+.stage-filmstrip .filmstrip .videocontainer .popover {
+  position: absolute !important;
+  left: calc(100% + 6px) !important;
+  right: auto !important;
+  top: 4px !important;
+  bottom: auto !important;
+  transform: none !important;
+  margin: 0 !important;
+  z-index: 600 !important;
 }
 
 /* Collapse toggle on the right edge of the overlay column. */
@@ -250,7 +267,16 @@ a.poweredby {
   z-index: 300 !important;
 }
 
-/* Filmstrip thumbnail menus are portaled to body — keep above the overlay column */
-body > div:has(.popover .popover-content) {
-  z-index: 500 !important;
+/* Body-portaled filmstrip menus — body.html pins beside the three-dot trigger */
+body > div[data-archivum-filmstrip-portal='1'] {
+  z-index: 600 !important;
+  pointer-events: none !important;
+  width: auto !important;
+  height: auto !important;
+  inset: auto !important;
+}
+
+body > div[data-archivum-filmstrip-portal='1'] .popover {
+  pointer-events: auto !important;
+  position: fixed !important;
 }
