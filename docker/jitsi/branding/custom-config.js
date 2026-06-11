@@ -6,7 +6,8 @@ config.hideDisplayName = true;
 config.hideConferenceTimer = true;
 config.disableReactions = false;
 config.disableRaiseHand = false;
-config.toolbarButtons = [];
+// Archivum control bar opens settings programmatically — keep the native button in DOM.
+config.toolbarButtons = ['settings'];
 config.toolbarConfig = {
   alwaysVisible: false,
   initialTimeout: 0,
