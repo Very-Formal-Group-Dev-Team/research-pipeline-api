@@ -15,6 +15,9 @@ const {
   postCompleteRecording,
   postTranscribeRecording,
   deleteRecordingHandler,
+  restoreRecordingHandler,
+  purgeRecordingHandler,
+  patchRecordingHandler,
   getScheduleRecordings,
   getMyRecordings,
   getRecordingDetailHandler,
@@ -65,6 +68,9 @@ router.post(
   asyncHandler(postCompleteRecording),
 );
 router.post('/:id/recordings/:recordingId/transcribe', asyncHandler(postTranscribeRecording));
+router.patch('/:id/recordings/:recordingId/restore', asyncHandler(restoreRecordingHandler));
+router.delete('/:id/recordings/:recordingId/purge', asyncHandler(purgeRecordingHandler));
+router.patch('/:id/recordings/:recordingId', asyncHandler(patchRecordingHandler));
 router.delete('/:id/recordings/:recordingId', asyncHandler(deleteRecordingHandler));
 router.get('/:id', asyncHandler(getMeetingById));
 router.patch('/:id', requireDashboardRole('adviser'), asyncHandler(patchUpdateMeeting));
