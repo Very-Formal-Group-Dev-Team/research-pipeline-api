@@ -1,0 +1,671 @@
+<link rel="stylesheet" href="css/archivum-jitsi.css?v=13" />
+<script>
+  (function () {
+    function syncOverlayFilmstrip(el) {
+      if (!el || !el.classList.contains('filmstrip')) {
+        return;
+      }
+
+      var page = el.closest('#videoconference_page');
+      if (!page || (!page.classList.contains('vertical-filmstrip') && !page.classList.contains('stage-filmstrip'))) {
+        return;
+      }
+
+      var largeVideo = page.querySelector('#largeVideoContainer');
+      if (largeVideo) {
+        largeVideo.style.width = '100%';
+        largeVideo.style.height = '100%';
+        largeVideo.style.left = '0';
+        largeVideo.style.top = '0';
+      }
+
+      if (el.style.right && el.style.right.charAt(0) === '-') {
+        el.style.right = '';
+      }
+
+      if (!el.classList.contains('hidden')) {
+        el.style.left = '0';
+      }
+    }
+
+    function watchFilmstrip(el) {
+      if (!el || el.dataset.archivumFilmstripLeft === '1') {
+        return;
+      }
+
+      el.dataset.archivumFilmstripLeft = '1';
+      syncOverlayFilmstrip(el);
+
+      new MutationObserver(function () {
+        syncOverlayFilmstrip(el);
+      }).observe(el, { attributes: true, attributeFilter: ['style', 'class'] });
+    }
+
+    function watchLargeVideo(el) {
+      if (!el || el.dataset.archivumLargeVideoFull === '1') {
+        return;
+      }
+
+      el.dataset.archivumLargeVideoFull = '1';
+      el.style.width = '100%';
+      el.style.height = '100%';
+      el.style.left = '0';
+      el.style.top = '0';
+
+      new MutationObserver(function () {
+        el.style.width = '100%';
+        el.style.height = '100%';
+        el.style.left = '0';
+        el.style.top = '0';
+      }).observe(el, { attributes: true, attributeFilter: ['style'] });
+    }
+
+    function scanFilmstrips() {
+      document
+        .querySelectorAll('.vertical-filmstrip .filmstrip, .stage-filmstrip .filmstrip')
+        .forEach(watchFilmstrip);
+
+      document
+        .querySelectorAll('.vertical-filmstrip #largeVideoContainer, .stage-filmstrip #largeVideoContainer')
+        .forEach(watchLargeVideo);
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', scanFilmstrips);
+    } else {
+      scanFilmstrips();
+    }
+
+    new MutationObserver(scanFilmstrips).observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
+
+  })();
+
+  (function () {
+    var ARCHIVUM_SOURCE = 'archivum-meeting';
+
+    function sendReaction(reaction) {
+      var store = window.APP && window.APP.store;
+      if (!store) {
+        return false;
+      }
+
+      store.dispatch({ type: 'ADD_REACTION_BUFFER', reaction: reaction });
+      store.dispatch({ type: 'FLUSH_REACTION_BUFFER' });
+      return true;
+    }
+
+    function withWebpackRequire(callback) {
+      var chunk = window.webpackChunkjitsi_meet || window.webpackChunk_jitsi_meet;
+      if (!chunk || !Array.isArray(chunk)) {
+        callback(null);
+        return;
+      }
+
+      chunk.push([
+        ['archivum-settings-' + Date.now()],
+        {},
+        function (require) {
+          callback(require);
+        },
+      ]);
+    }
+
+    function findModuleIdBySource(require, needle) {
+      if (!require || !require.m) {
+        return null;
+      }
+
+      var moduleIds = Object.keys(require.m);
+      var i;
+
+      for (i = 0; i < moduleIds.length; i += 1) {
+        if (require.m[moduleIds[i]].toString().indexOf(needle) !== -1) {
+          return moduleIds[i];
+        }
+      }
+
+      return null;
+    }
+
+    function resolveSettingsDialogOpener(require) {
+      if (!require) {
+        return null;
+      }
+
+      var actionsModuleId = findModuleIdBySource(require, 'SETTINGS_TABS');
+      if (actionsModuleId) {
+        try {
+          var actionsModule = require(actionsModuleId);
+          if (actionsModule && typeof actionsModule.openSettingsDialog === 'function') {
+            return actionsModule.openSettingsDialog;
+          }
+        } catch (error) {
+          /* keep searching */
+        }
+      }
+
+      var dialogModuleId = findModuleIdBySource(require, 'SettingsDialog');
+      if (!dialogModuleId) {
+        return null;
+      }
+
+      try {
+        var dialogModule = require(dialogModuleId);
+        var SettingsDialog = dialogModule.default || dialogModule.SettingsDialog;
+        if (!SettingsDialog) {
+          return null;
+        }
+
+        return function openSettingsDialogAction() {
+          return {
+            type: 'OPEN_DIALOG',
+            component: SettingsDialog,
+            componentProps: {},
+          };
+        };
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function clickSettingsToolbarButton() {
+      var selectors = [
+        '#toolbox-button-settings',
+        '#settings-button',
+        'button[id$="-settings-button"]',
+        'button[id$="settings-button"]',
+        '[data-testid="settings-button"]',
+      ];
+      var i;
+      var btn;
+
+      for (i = 0; i < selectors.length; i += 1) {
+        btn = document.querySelector(selectors[i]);
+        if (btn) {
+          btn.click();
+          return true;
+        }
+      }
+
+      var candidates = document.querySelectorAll(
+        '.new-toolbox button, .toolbox-content button, button[aria-label], [role="button"][aria-label]',
+      );
+      for (i = 0; i < candidates.length; i += 1) {
+        btn = candidates[i];
+        var label = (btn.getAttribute('aria-label') || btn.getAttribute('title') || '').toLowerCase();
+        if (label.indexOf('setting') !== -1) {
+          btn.click();
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    function isSettingsDialogOpen() {
+      var store = window.APP && window.APP.store;
+      if (!store) {
+        return false;
+      }
+
+      return Boolean(store.getState()['features/base/dialog'].component);
+    }
+
+    function dispatchSettingsDialog() {
+      var store = window.APP && window.APP.store;
+      if (!store || isSettingsDialogOpen() || !window.__archivumOpenSettingsDialog) {
+        return isSettingsDialogOpen();
+      }
+
+      store.dispatch(window.__archivumOpenSettingsDialog());
+      return isSettingsDialogOpen();
+    }
+
+    function openSettingsDialog() {
+      var store = window.APP && window.APP.store;
+      if (!store) {
+        return false;
+      }
+
+      if (isSettingsDialogOpen()) {
+        return true;
+      }
+
+      if (window.__archivumOpenSettingsDialog) {
+        return dispatchSettingsDialog() || clickSettingsToolbarButton();
+      }
+
+      if (window.__archivumSettingsLookupPending) {
+        return false;
+      }
+
+      window.__archivumSettingsLookupPending = true;
+      withWebpackRequire(function (require) {
+        window.__archivumSettingsLookupPending = false;
+
+        if (!window.__archivumOpenSettingsDialog && require) {
+          window.__archivumOpenSettingsDialog = resolveSettingsDialogOpener(require);
+        }
+
+        if (dispatchSettingsDialog()) {
+          return;
+        }
+
+        clickSettingsToolbarButton();
+      });
+
+      return false;
+    }
+
+    function openSettingsDialogWithRetry(attempt) {
+      if (openSettingsDialog() || isSettingsDialogOpen()) {
+        return;
+      }
+
+      if (attempt >= 12) {
+        return;
+      }
+
+      window.setTimeout(function () {
+        openSettingsDialogWithRetry(attempt + 1);
+      }, 100);
+    }
+
+    window.addEventListener('message', function (event) {
+      var data = event.data;
+      if (!data || data.source !== ARCHIVUM_SOURCE) {
+        return;
+      }
+
+      if (data.command === 'send-reaction') {
+        if (event.source !== window.parent) {
+          return;
+        }
+        sendReaction(data.reaction);
+        return;
+      }
+
+      if (data.command === 'open-settings') {
+        openSettingsDialogWithRetry(0);
+      }
+    });
+  })();
+
+  (function () {
+    var CHAT_MIN_WIDTH = 315;
+    var VIDEO_SPACE_MIN_SIZE = 500;
+    var chatResizeState = null;
+
+    function getStore() {
+      return window.APP && window.APP.store;
+    }
+
+    function getCurrentChatWidth() {
+      var store = getStore();
+      if (!store) {
+        return CHAT_MIN_WIDTH;
+      }
+
+      var width = store.getState()['features/chat'].width;
+      return (width && width.current) || CHAT_MIN_WIDTH;
+    }
+
+    function getMaxChatWidth() {
+      var store = getStore();
+      var clientWidth = window.innerWidth;
+
+      if (store) {
+        clientWidth = store.getState()['features/base/responsive-ui'].clientWidth || clientWidth;
+      }
+
+      return Math.max(clientWidth - VIDEO_SPACE_MIN_SIZE, CHAT_MIN_WIDTH);
+    }
+
+    function setChatWidth(width) {
+      var store = getStore();
+      if (!store) {
+        return;
+      }
+
+      store.dispatch({ type: 'SET_USER_CHAT_WIDTH', width: width });
+    }
+
+    function setChatResizing(resizing) {
+      var store = getStore();
+      if (!store) {
+        return;
+      }
+
+      store.dispatch({ type: 'SET_CHAT_IS_RESIZING', resizing: resizing });
+    }
+
+    function onChatResizePointerDown(event) {
+      var handle = event.target.closest('#sideToolbarContainer .dragHandleContainer');
+      if (!handle) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
+      handle.setPointerCapture(event.pointerId);
+
+      chatResizeState = {
+        startX: event.clientX,
+        startWidth: getCurrentChatWidth(),
+      };
+
+      setChatResizing(true);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    }
+
+    function onChatResizePointerMove(event) {
+      if (!chatResizeState) {
+        return;
+      }
+
+      // Chat is docked on the right with the handle on its left edge — invert Jitsi's delta.
+      var diff = event.clientX - chatResizeState.startX;
+      var newWidth = Math.max(
+        CHAT_MIN_WIDTH,
+        Math.min(chatResizeState.startWidth - diff, getMaxChatWidth()),
+      );
+
+      if (newWidth !== getCurrentChatWidth()) {
+        setChatWidth(newWidth);
+      }
+    }
+
+    function onChatResizePointerUp() {
+      if (!chatResizeState) {
+        return;
+      }
+
+      chatResizeState = null;
+      setChatResizing(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+
+    document.addEventListener('pointerdown', onChatResizePointerDown, true);
+    document.addEventListener('pointermove', onChatResizePointerMove, true);
+    document.addEventListener('pointerup', onChatResizePointerUp, true);
+  })();
+
+  (function () {
+    var activeFilmstripMenuTrigger = null;
+    var activeFilmstripMenuPortal = null;
+    var syncDelays = [0, 16, 50, 100, 200, 400];
+
+    function getStore() {
+      return window.APP && window.APP.store;
+    }
+
+    function isInFilmstrip(el) {
+      return Boolean(el && el.closest('.vertical-filmstrip, .stage-filmstrip'));
+    }
+
+    function getFilmstripMenuTrigger(target) {
+      if (!target || !target.closest) {
+        return null;
+      }
+
+      var trigger = target.closest('[id$="menu-trigger"]');
+      if (trigger && isInFilmstrip(trigger)) {
+        return trigger;
+      }
+
+      return null;
+    }
+
+    function getInlineMenu(trigger) {
+      if (!trigger) {
+        return null;
+      }
+
+      var container = trigger.closest('.videocontainer');
+      return container ? container.querySelector('.popover') : null;
+    }
+
+    function isParticipantMenuPortal(portal) {
+      var content = portal.querySelector('.popover-content');
+      if (!content) {
+        return false;
+      }
+
+      var width = content.offsetWidth || content.getBoundingClientRect().width;
+      return width > 0 && width < 360;
+    }
+
+    function findBodyMenuPortals() {
+      var portals = [];
+
+      document.querySelectorAll('body > div').forEach(function (node) {
+        if (isParticipantMenuPortal(node)) {
+          portals.push(node);
+        }
+      });
+
+      return portals;
+    }
+
+    function clearFilmstripPortal(portal) {
+      if (!portal) {
+        return;
+      }
+
+      delete portal.dataset.archivumFilmstripPortal;
+      portal.style.position = '';
+      portal.style.left = '';
+      portal.style.right = '';
+      portal.style.top = '';
+      portal.style.bottom = '';
+      portal.style.width = '';
+      portal.style.height = '';
+      portal.style.inset = '';
+      portal.style.visibility = '';
+      portal.style.pointerEvents = '';
+      portal.style.zIndex = '';
+
+      var popover = portal.querySelector('.popover');
+      if (popover) {
+        popover.style.position = '';
+        popover.style.left = '';
+        popover.style.right = '';
+        popover.style.top = '';
+        popover.style.bottom = '';
+        popover.style.transform = '';
+        popover.style.margin = '';
+        popover.style.zIndex = '';
+      }
+    }
+
+    function applyRightOfTrigger(targetEl, content, trigger) {
+      var bounds = trigger.getBoundingClientRect();
+      var height = content.offsetHeight || content.getBoundingClientRect().height || 120;
+      var top = Math.min(bounds.y, window.innerHeight - height - 20);
+      var left = bounds.x + bounds.width + 6;
+
+      targetEl.style.position = 'fixed';
+      targetEl.style.inset = 'auto';
+      targetEl.style.width = 'auto';
+      targetEl.style.height = 'auto';
+      targetEl.style.left = left + 'px';
+      targetEl.style.right = 'auto';
+      targetEl.style.top = top + 'px';
+      targetEl.style.bottom = 'auto';
+      targetEl.style.transform = 'none';
+      targetEl.style.margin = '0';
+      targetEl.style.display = '';
+      targetEl.style.visibility = 'visible';
+      targetEl.style.zIndex = '600';
+
+      content.classList.remove('left');
+      content.classList.add('right');
+    }
+
+    function repositionBodyPortal(portal, trigger) {
+      var popover = portal.querySelector('.popover');
+      var content = portal.querySelector('.popover-content');
+      if (!popover || !content || !trigger) {
+        return false;
+      }
+
+      portal.dataset.archivumFilmstripPortal = '1';
+      portal.style.position = 'fixed';
+      portal.style.inset = 'auto';
+      portal.style.width = 'auto';
+      portal.style.height = 'auto';
+      portal.style.pointerEvents = 'none';
+      portal.style.zIndex = '600';
+
+      applyRightOfTrigger(popover, content, trigger);
+      popover.style.pointerEvents = 'auto';
+
+      var inlineMenu = getInlineMenu(trigger);
+      if (inlineMenu) {
+        inlineMenu.style.display = 'none';
+        inlineMenu.style.visibility = 'hidden';
+        inlineMenu.style.pointerEvents = 'none';
+      }
+
+      activeFilmstripMenuPortal = portal;
+      return true;
+    }
+
+    function repositionInlineMenu(trigger) {
+      var inlineMenu = getInlineMenu(trigger);
+      var content = inlineMenu && inlineMenu.querySelector('.popover-content');
+      if (!inlineMenu || !content) {
+        return false;
+      }
+
+      applyRightOfTrigger(inlineMenu, content, trigger);
+      inlineMenu.style.pointerEvents = 'auto';
+      return true;
+    }
+
+    function syncFilmstripMenu() {
+      var trigger = activeFilmstripMenuTrigger;
+      if (!trigger || !isInFilmstrip(trigger)) {
+        return;
+      }
+
+      var portals = findBodyMenuPortals();
+      var i;
+
+      for (i = portals.length - 1; i >= 0; i -= 1) {
+        if (repositionBodyPortal(portals[i], trigger)) {
+          return;
+        }
+      }
+
+      repositionInlineMenu(trigger);
+    }
+
+    function scheduleFilmstripMenuSync() {
+      syncDelays.forEach(function (delay) {
+        window.setTimeout(syncFilmstripMenu, delay);
+      });
+    }
+
+    function armFilmstripMenu(trigger) {
+      activeFilmstripMenuTrigger = trigger;
+      scheduleFilmstripMenuSync();
+    }
+
+    function disarmFilmstripMenu() {
+      if (activeFilmstripMenuPortal) {
+        clearFilmstripPortal(activeFilmstripMenuPortal);
+      }
+
+      activeFilmstripMenuTrigger = null;
+      activeFilmstripMenuPortal = null;
+    }
+
+    function trackFilmstripMenuHover(event) {
+      var trigger = getFilmstripMenuTrigger(event.target);
+      if (trigger) {
+        armFilmstripMenu(trigger);
+      }
+    }
+
+    document.addEventListener('pointerdown', function (event) {
+      var trigger = getFilmstripMenuTrigger(event.target);
+      if (trigger) {
+        armFilmstripMenu(trigger);
+        return;
+      }
+
+      if (!event.target.closest('.popover-content')) {
+        disarmFilmstripMenu();
+      }
+    }, true);
+
+    document.addEventListener('mouseover', trackFilmstripMenuHover, true);
+
+    new MutationObserver(function (mutations) {
+      if (!activeFilmstripMenuTrigger) {
+        return;
+      }
+
+      mutations.forEach(function (mutation) {
+        if (mutation.type === 'childList') {
+          mutation.addedNodes.forEach(function () {
+            scheduleFilmstripMenuSync();
+          });
+
+          mutation.removedNodes.forEach(function (node) {
+            if (node === activeFilmstripMenuPortal) {
+              activeFilmstripMenuPortal = null;
+            }
+          });
+          return;
+        }
+
+        if (
+          mutation.type === 'attributes' &&
+          (mutation.attributeName === 'style' || mutation.attributeName === 'class')
+        ) {
+          var target = mutation.target;
+          if (
+            target === activeFilmstripMenuPortal ||
+            target.closest('.popover') ||
+            target.classList.contains('popover')
+          ) {
+            scheduleFilmstripMenuSync();
+          }
+        }
+      });
+    }).observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['style', 'class'],
+    });
+
+    // Recover from a prior "pin to stage" session that left the main stage black.
+    function clearStageParticipants() {
+      var store = getStore();
+      if (!store) {
+        return false;
+      }
+
+      store.dispatch({ type: 'CLEAR_STAGE_PARTICIPANTS' });
+      return true;
+    }
+
+    var stageResetAttempts = 0;
+    var stageResetTimer = window.setInterval(function () {
+      stageResetAttempts += 1;
+      if (clearStageParticipants() || stageResetAttempts > 50) {
+        window.clearInterval(stageResetTimer);
+      }
+    }, 200);
+  })();
+</script>

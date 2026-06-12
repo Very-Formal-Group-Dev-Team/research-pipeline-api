@@ -1,7 +1,6 @@
 const db = require('../../../config/db');
 const {
   REGISTERED_INSTITUTIONS,
-  getRegisteredInstitutionCodes,
 } = require('../../constants/institutions');
 
 async function ensureRegisteredInstitutions() {
@@ -13,8 +12,8 @@ async function ensureRegisteredInstitutions() {
 
     if (!rows[0]) {
       await db.query(
-        `INSERT INTO institutions (id, name, code, created_at, updated_at)
-         VALUES (UUID(), ?, ?, NOW(), NOW())`,
+        `INSERT INTO institutions (id, name, code, is_active, created_at, updated_at)
+         VALUES (UUID(), ?, ?, 1, NOW(), NOW())`,
         [institution.name, institution.code],
       );
     } else {
@@ -26,22 +25,23 @@ async function ensureRegisteredInstitutions() {
   }
 }
 
-async function searchRegisteredInstitutions(query) {
+async function searchInstitutions(query, { activeOnly = true } = {}) {
   await ensureRegisteredInstitutions();
 
-  const codes = getRegisteredInstitutionCodes();
-  if (!codes.length) return [];
-
-  const placeholders = codes.map(() => '?').join(', ');
-  const params = [...codes];
-  let sql = `SELECT id, name, code
+  const params = [];
+  let sql = `SELECT id, name, code, is_active, created_at, updated_at
              FROM institutions
-             WHERE code IN (${placeholders})`;
+             WHERE 1=1`;
+
+  if (activeOnly) {
+    sql += ' AND is_active = 1';
+  }
 
   const trimmedQuery = typeof query === 'string' ? query.trim() : '';
   if (trimmedQuery) {
-    sql += ' AND LOWER(name) LIKE ?';
-    params.push(`%${trimmedQuery.toLowerCase()}%`);
+    sql += ' AND (LOWER(name) LIKE ? OR LOWER(code) LIKE ?)';
+    const like = `%${trimmedQuery.toLowerCase()}%`;
+    params.push(like, like);
   }
 
   sql += ' ORDER BY name ASC';
@@ -50,26 +50,111 @@ async function searchRegisteredInstitutions(query) {
   return rows;
 }
 
+async function getInstitutionById(institutionId, { activeOnly = false } = {}) {
+  if (!institutionId) return null;
+
+  const params = [institutionId];
+  let sql = `SELECT id, name, code, is_active, created_at, updated_at
+             FROM institutions
+             WHERE id = ?`;
+
+  if (activeOnly) {
+    sql += ' AND is_active = 1';
+  }
+
+  sql += ' LIMIT 1';
+
+  const { rows } = await db.query(sql, params);
+  return rows[0] || null;
+}
+
 async function isRegisteredInstitutionId(institutionId) {
-  if (!institutionId) return false;
+  const institution = await getInstitutionById(institutionId, { activeOnly: true });
+  return Boolean(institution);
+}
 
+async function listAllInstitutions() {
   await ensureRegisteredInstitutions();
-
-  const codes = getRegisteredInstitutionCodes();
-  if (!codes.length) return false;
-
-  const placeholders = codes.map(() => '?').join(', ');
   const { rows } = await db.query(
-    `SELECT id FROM institutions WHERE id = ? AND code IN (${placeholders}) LIMIT 1`,
-    [institutionId, ...codes],
+    `SELECT id, name, code, is_active, created_at, updated_at
+     FROM institutions
+     ORDER BY name ASC`,
+  );
+  return rows;
+}
+
+async function createInstitution({ name, code }) {
+  const trimmedName = typeof name === 'string' ? name.trim() : '';
+  const trimmedCode = typeof code === 'string' ? code.trim().toUpperCase() : '';
+
+  if (!trimmedName || !trimmedCode) {
+    return { error: 'Name and code are required' };
+  }
+
+  if (!/^[A-Z0-9_-]{2,50}$/.test(trimmedCode)) {
+    return { error: 'Code must be 2-50 characters (letters, numbers, underscore, hyphen)' };
+  }
+
+  try {
+    await db.query(
+      `INSERT INTO institutions (id, name, code, is_active, created_at, updated_at)
+       VALUES (UUID(), ?, ?, 1, NOW(), NOW())`,
+      [trimmedName, trimmedCode],
+    );
+  } catch (err) {
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return { error: 'An institution with this code already exists' };
+    }
+    throw err;
+  }
+
+  const { rows } = await db.query(
+    'SELECT id, name, code, is_active, created_at, updated_at FROM institutions WHERE code = ? LIMIT 1',
+    [trimmedCode],
   );
 
-  return Boolean(rows[0]);
+  return { data: rows[0] };
+}
+
+async function updateInstitution(institutionId, { name, code, isActive }) {
+  const existing = await getInstitutionById(institutionId);
+  if (!existing) {
+    return { error: 'Institution not found' };
+  }
+
+  const nextName = typeof name === 'string' ? name.trim() : existing.name;
+  const nextCode = typeof code === 'string' ? code.trim().toUpperCase() : existing.code;
+  const nextActive = typeof isActive === 'boolean' ? (isActive ? 1 : 0) : existing.is_active;
+
+  if (!nextName || !nextCode) {
+    return { error: 'Name and code are required' };
+  }
+
+  if (!/^[A-Z0-9_-]{2,50}$/.test(nextCode)) {
+    return { error: 'Code must be 2-50 characters (letters, numbers, underscore, hyphen)' };
+  }
+
+  try {
+    await db.query(
+      `UPDATE institutions
+       SET name = ?, code = ?, is_active = ?, updated_at = NOW()
+       WHERE id = ?`,
+      [nextName, nextCode, nextActive, institutionId],
+    );
+  } catch (err) {
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return { error: 'An institution with this code already exists' };
+    }
+    throw err;
+  }
+
+  const updated = await getInstitutionById(institutionId);
+  return { data: updated };
 }
 
 async function getCoursesByInstitutionId(institutionId) {
-  const isRegistered = await isRegisteredInstitutionId(institutionId);
-  if (!isRegistered) {
+  const institution = await getInstitutionById(institutionId, { activeOnly: true });
+  if (!institution) {
     return { error: 'Institution not found' };
   }
 
@@ -87,8 +172,8 @@ async function getCoursesByInstitutionId(institutionId) {
 async function getCourseForInstitution(institutionId, courseId) {
   if (!courseId) return null;
 
-  const isRegistered = await isRegisteredInstitutionId(institutionId);
-  if (!isRegistered) return null;
+  const institution = await getInstitutionById(institutionId, { activeOnly: true });
+  if (!institution) return null;
 
   const { rows } = await db.query(
     `SELECT id, institution_id, course_name, code, description
@@ -101,10 +186,149 @@ async function getCourseForInstitution(institutionId, courseId) {
   return rows[0] || null;
 }
 
+async function getProgramsByInstitutionId(institutionId, { activeOnly = true } = {}) {
+  const institution = await getInstitutionById(institutionId, { activeOnly });
+  if (!institution) {
+    return { error: 'Institution not found' };
+  }
+
+  const params = [institutionId];
+  let sql = `SELECT id, institution_id, name, code, description, is_active, created_at, updated_at
+             FROM programs
+             WHERE institution_id = ?`;
+
+  if (activeOnly) {
+    sql += ' AND is_active = 1';
+  }
+
+  sql += ' ORDER BY name ASC';
+
+  const { rows } = await db.query(sql, params);
+  return { data: rows };
+}
+
+async function getProgramForInstitution(institutionId, programId, { activeOnly = true } = {}) {
+  if (!programId) return null;
+
+  const params = [programId, institutionId];
+  let sql = `SELECT id, institution_id, name, code, description, is_active
+             FROM programs
+             WHERE id = ? AND institution_id = ?`;
+
+  if (activeOnly) {
+    sql += ' AND is_active = 1';
+  }
+
+  sql += ' LIMIT 1';
+
+  const { rows } = await db.query(sql, params);
+  return rows[0] || null;
+}
+
+async function listProgramsForInstitution(institutionId) {
+  return getProgramsByInstitutionId(institutionId, { activeOnly: false });
+}
+
+async function createProgram(institutionId, { name, code, description }) {
+  const institution = await getInstitutionById(institutionId);
+  if (!institution) {
+    return { error: 'Institution not found' };
+  }
+
+  const trimmedName = typeof name === 'string' ? name.trim() : '';
+  const trimmedCode = typeof code === 'string' ? code.trim().toUpperCase() : '';
+  const trimmedDescription =
+    typeof description === 'string' ? description.trim() || null : null;
+
+  if (!trimmedName || !trimmedCode) {
+    return { error: 'Name and code are required' };
+  }
+
+  if (!/^[A-Z0-9_-]{2,50}$/.test(trimmedCode)) {
+    return { error: 'Code must be 2-50 characters (letters, numbers, underscore, hyphen)' };
+  }
+
+  try {
+    await db.query(
+      `INSERT INTO programs (id, institution_id, name, code, description, is_active, created_at, updated_at)
+       VALUES (UUID(), ?, ?, ?, ?, 1, NOW(), NOW())`,
+      [institutionId, trimmedName, trimmedCode, trimmedDescription],
+    );
+  } catch (err) {
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return { error: 'A program with this code already exists for this institution' };
+    }
+    throw err;
+  }
+
+  const { rows } = await db.query(
+    `SELECT id, institution_id, name, code, description, is_active, created_at, updated_at
+     FROM programs
+     WHERE institution_id = ? AND code = ?
+     LIMIT 1`,
+    [institutionId, trimmedCode],
+  );
+
+  return { data: rows[0] };
+}
+
+async function updateProgram(programId, institutionId, { name, code, description, isActive }) {
+  const existing = await getProgramForInstitution(institutionId, programId, { activeOnly: false });
+  if (!existing) {
+    return { error: 'Program not found' };
+  }
+
+  const nextName = typeof name === 'string' ? name.trim() : existing.name;
+  const nextCode = typeof code === 'string' ? code.trim().toUpperCase() : existing.code;
+  const nextDescription =
+    typeof description === 'string' ? description.trim() || null : existing.description;
+  const nextActive = typeof isActive === 'boolean' ? (isActive ? 1 : 0) : existing.is_active;
+
+  if (!nextName || !nextCode) {
+    return { error: 'Name and code are required' };
+  }
+
+  if (!/^[A-Z0-9_-]{2,50}$/.test(nextCode)) {
+    return { error: 'Code must be 2-50 characters (letters, numbers, underscore, hyphen)' };
+  }
+
+  try {
+    await db.query(
+      `UPDATE programs
+       SET name = ?, code = ?, description = ?, is_active = ?, updated_at = NOW()
+       WHERE id = ? AND institution_id = ?`,
+      [nextName, nextCode, nextDescription, nextActive, programId, institutionId],
+    );
+  } catch (err) {
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return { error: 'A program with this code already exists for this institution' };
+    }
+    throw err;
+  }
+
+  const updated = await getProgramForInstitution(institutionId, programId, { activeOnly: false });
+  return { data: updated };
+}
+
+/** @deprecated use searchInstitutions */
+async function searchRegisteredInstitutions(query) {
+  return searchInstitutions(query, { activeOnly: true });
+}
+
 module.exports = {
   ensureRegisteredInstitutions,
+  searchInstitutions,
   searchRegisteredInstitutions,
+  getInstitutionById,
   isRegisteredInstitutionId,
+  listAllInstitutions,
+  createInstitution,
+  updateInstitution,
   getCoursesByInstitutionId,
   getCourseForInstitution,
+  getProgramsByInstitutionId,
+  getProgramForInstitution,
+  listProgramsForInstitution,
+  createProgram,
+  updateProgram,
 };

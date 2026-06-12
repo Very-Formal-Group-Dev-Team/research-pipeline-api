@@ -4,6 +4,9 @@ const {
   completeRecording,
   transcribeRecording,
   deleteRecording,
+  restoreRecording,
+  purgeRecording,
+  renameRecording,
   listScheduleRecordings,
   listAccessibleRecordings,
   getRecordingDetail,
@@ -75,6 +78,37 @@ async function deleteRecordingHandler(req, res) {
   return res.json(result.data);
 }
 
+async function restoreRecordingHandler(req, res) {
+  const scheduleId = req.params.id;
+  const recordingId = req.params.recordingId;
+  const result = await restoreRecording(req.user.id, scheduleId, recordingId);
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
+async function purgeRecordingHandler(req, res) {
+  const scheduleId = req.params.id;
+  const recordingId = req.params.recordingId;
+  const result = await purgeRecording(req.user.id, scheduleId, recordingId);
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
+async function patchRecordingHandler(req, res) {
+  const scheduleId = req.params.id;
+  const recordingId = req.params.recordingId;
+  const displayName = req.body?.display_name ?? req.body?.displayName ?? '';
+  const result = await renameRecording(req.user.id, scheduleId, recordingId, displayName);
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
 async function getScheduleRecordings(req, res) {
   const scheduleId = req.params.id;
   const result = await listScheduleRecordings(req.user.id, scheduleId);
@@ -117,6 +151,9 @@ module.exports = {
   postCompleteRecording,
   postTranscribeRecording,
   deleteRecordingHandler,
+  restoreRecordingHandler,
+  purgeRecordingHandler,
+  patchRecordingHandler,
   getScheduleRecordings,
   getMyRecordings,
   getRecordingDetailHandler,

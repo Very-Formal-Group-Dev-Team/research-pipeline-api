@@ -28,5 +28,6 @@ for (const dir of cfgDirs) {
 if (!removed) {
   console.log('No Jitsi cfg directory found to remove.');
 } else {
+  require('./sync-jitsi-branding');
   console.log('Restart Jitsi: docker compose up -d jitsi-web jitsi-prosody jitsi-jicofo jitsi-jvb');
 }

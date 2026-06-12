@@ -1,6 +1,6 @@
 /**
- * Registered institutions — no CRUD UI yet; seed/validate against this list.
- * Add new entries here when onboarding more schools.
+ * Bootstrap institutions for dev/first deploy. Production catalog is managed via admin UI.
+ * Entries here are upserted into the institutions table on search.
  */
 const DEFAULT_INSTITUTION = {
   name: 'Mapúa Malayan Colleges Mindanao',

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from transcribe import transcribe_file
 
 
-UPLOAD_ROOT = Path(os.environ.get('UPLOAD_ROOT', '/uploads')).resolve()
+UPLOAD_ROOT = Path(os.environ.get('UPLOAD_ROOT', '/app/uploads')).resolve()
 DEFAULT_MODEL = (os.environ.get('WHISPER_MODEL') or 'base').strip() or 'base'
 
 app = FastAPI(title='Transcription Model', version='1.0.0')

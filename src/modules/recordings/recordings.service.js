@@ -19,11 +19,13 @@ function mapRecordingRow(row, userId) {
   };
 }
 
-async function getRecordingById(recordingId) {
+async function getRecordingById(recordingId, { includeDeleted = false } = {}) {
+  const deletedClause = includeDeleted ? '' : 'AND deleted_at IS NULL';
   const { rows } = await db.query(
     `SELECT *
      FROM meeting_recordings
      WHERE id = ?
+       ${deletedClause}
      LIMIT 1`,
     [recordingId],
   );
@@ -340,17 +342,67 @@ function unlinkUpload(relativeUrl) {
   fs.unlink(filePath, () => {});
 }
 
-async function deleteRecording(userId, scheduleId, recordingId) {
+async function assertRecordingOwner(userId, scheduleId, recordingId, { includeDeleted = false } = {}) {
   const access = await assertDefenseMeetingAccess(userId, scheduleId);
-  if (access.error) return access;
+  if (access.error) return { error: access.error, status: access.status };
 
-  const recording = await getRecordingById(recordingId);
+  const recording = await getRecordingById(recordingId, { includeDeleted });
   if (!recording || recording.schedule_id !== scheduleId || recording.schedule_source !== access.scheduleSource) {
     return { error: 'Recording not found', status: 404 };
   }
 
   if (recording.recorded_by !== userId) {
-    return { error: 'Only the user who recorded this meeting can delete it', status: 403 };
+    return { error: 'Only the user who recorded this meeting can manage it', status: 403 };
+  }
+
+  return { access, recording };
+}
+
+async function deleteRecording(userId, scheduleId, recordingId) {
+  const check = await assertRecordingOwner(userId, scheduleId, recordingId);
+  if (check.error) return check;
+
+  const { recording } = check;
+  if (recording.deleted_at) {
+    return { data: { deleted: true, recording_id: recordingId, soft_deleted: true } };
+  }
+
+  await db.query(
+    `UPDATE meeting_recordings
+     SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    [recordingId],
+  );
+
+  return { data: { deleted: true, recording_id: recordingId, soft_deleted: true } };
+}
+
+async function restoreRecording(userId, scheduleId, recordingId) {
+  const check = await assertRecordingOwner(userId, scheduleId, recordingId, { includeDeleted: true });
+  if (check.error) return check;
+
+  const { recording } = check;
+  if (!recording.deleted_at) {
+    return { data: { restored: true, recording_id: recordingId } };
+  }
+
+  await db.query(
+    `UPDATE meeting_recordings
+     SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    [recordingId],
+  );
+
+  return { data: { restored: true, recording_id: recordingId } };
+}
+
+async function purgeRecording(userId, scheduleId, recordingId) {
+  const check = await assertRecordingOwner(userId, scheduleId, recordingId, { includeDeleted: true });
+  if (check.error) return check;
+
+  const { recording } = check;
+  if (!recording.deleted_at) {
+    return { error: 'Recording must be deleted before it can be permanently removed', status: 400 };
   }
 
   unlinkUpload(recording.file_url);
@@ -358,7 +410,31 @@ async function deleteRecording(userId, scheduleId, recordingId) {
 
   await db.query(`DELETE FROM meeting_recordings WHERE id = ?`, [recordingId]);
 
-  return { data: { deleted: true, recording_id: recordingId } };
+  return { data: { purged: true, recording_id: recordingId } };
+}
+
+async function renameRecording(userId, scheduleId, recordingId, displayName) {
+  const check = await assertRecordingOwner(userId, scheduleId, recordingId);
+  if (check.error) return check;
+
+  const normalized = String(displayName || '').trim().slice(0, 255);
+  if (!normalized) {
+    return { error: 'Recording name is required', status: 400 };
+  }
+
+  await db.query(
+    `UPDATE meeting_recordings
+     SET display_name = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    [normalized, recordingId],
+  );
+
+  return {
+    data: {
+      recording_id: recordingId,
+      display_name: normalized,
+    },
+  };
 }
 
 async function listScheduleRecordings(userId, scheduleId) {
@@ -367,12 +443,13 @@ async function listScheduleRecordings(userId, scheduleId) {
 
   const { rows } = await db.query(
     `SELECT r.id, r.schedule_id, r.schedule_source, r.file_url, r.audio_url, r.file_size, r.duration_ms,
-            r.mime_type, r.recorded_by, r.recorded_at, r.ended_at, r.status,
+            r.mime_type, r.display_name, r.recorded_by, r.recorded_at, r.ended_at, r.status,
             r.transcription_status, r.transcription_error,
             a.id AS transcription_id, a.transcribed_at
      FROM meeting_recordings r
      LEFT JOIN meeting_transcription_archives a ON a.recording_id = r.id
      WHERE r.schedule_id = ? AND r.schedule_source = ?
+       AND r.deleted_at IS NULL
      ORDER BY r.recorded_at DESC`,
     [scheduleId, access.scheduleSource],
   );
@@ -390,7 +467,7 @@ async function listScheduleRecordings(userId, scheduleId) {
 
 async function listAccessibleRecordings(userId) {
   const { rows: defenseRows } = await db.query(
-    `SELECT r.id, r.schedule_id, r.schedule_source, r.file_url, r.duration_ms,
+    `SELECT r.id, r.schedule_id, r.schedule_source, r.file_url, r.duration_ms, r.display_name,
             r.recorded_by, r.recorded_at, r.status, r.transcription_status, r.transcription_error,
             a.id AS transcription_id, a.transcribed_at,
             p.title AS project_title, p.project_code, d.defense_type, d.scheduled_at
@@ -399,6 +476,7 @@ async function listAccessibleRecordings(userId) {
      INNER JOIN projects p ON p.id = d.project_id
      LEFT JOIN meeting_transcription_archives a ON a.recording_id = r.id
      WHERE r.status = 'completed'
+       AND r.deleted_at IS NULL
        AND (
          d.created_by = ?
          OR EXISTS (
@@ -419,7 +497,7 @@ async function listAccessibleRecordings(userId) {
   );
 
   const { rows: meetingRows } = await db.query(
-    `SELECT r.id, r.schedule_id, r.schedule_source, r.file_url, r.duration_ms,
+    `SELECT r.id, r.schedule_id, r.schedule_source, r.file_url, r.duration_ms, r.display_name,
             r.recorded_by, r.recorded_at, r.status, r.transcription_status, r.transcription_error,
             a.id AS transcription_id, a.transcribed_at,
             p.title AS project_title, p.project_code, m.defense_type, m.scheduled_at,
@@ -429,6 +507,7 @@ async function listAccessibleRecordings(userId) {
      LEFT JOIN projects p ON p.id = m.project_id
      LEFT JOIN meeting_transcription_archives a ON a.recording_id = r.id
      WHERE r.status = 'completed'
+       AND r.deleted_at IS NULL
        AND (
          m.created_by = ?
          OR m.adviser_id = ?
@@ -491,6 +570,9 @@ module.exports = {
   completeRecording,
   transcribeRecording,
   deleteRecording,
+  restoreRecording,
+  purgeRecording,
+  renameRecording,
   listScheduleRecordings,
   listAccessibleRecordings,
   getRecordingDetail,

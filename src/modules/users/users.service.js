@@ -1,7 +1,7 @@
 const db = require('../../../config/db');
 const { createNotification } = require('../notifications/notifications.service');
 
-const ALLOWED_ROLE_VALUES = new Set(['student', 'teacher', 'adviser', 'coordinator']);
+const ALLOWED_ROLE_VALUES = new Set(['student', 'teacher', 'adviser', 'coordinator', 'admin']);
 
 function normalizeRole(role) {
   if (!role || typeof role !== 'string') return null;
@@ -130,7 +130,7 @@ async function completeProfile(userId, payload) {
   }
 
   if (!role) {
-    return { error: 'role must be one of: student, teacher, adviser, coordinator' };
+    return { error: 'role must be one of: student, teacher, adviser, coordinator, admin' };
   }
 
   const email = typeof payload.email === 'string' && payload.email.trim() ? payload.email.trim() : null;
@@ -203,6 +203,10 @@ async function completeProfile(userId, payload) {
       title: 'Coordinator account ready',
       message: 'Your coordinator account is ready. You can now manage institution courses, advisers, and defenses.',
     },
+    admin: {
+      title: 'Admin account ready',
+      message: 'Your admin account is ready.',
+    },
   };
 
   const welcome = roleWelcomeMessages[role] || roleWelcomeMessages.student;
@@ -221,7 +225,14 @@ async function completeProfile(userId, payload) {
   return {
     data: {
       success: true,
-      redirectPath: role === 'student' ? '/student' : role === 'coordinator' ? '/coordinator' : '/adviser',
+      redirectPath:
+        role === 'student'
+          ? '/student'
+          : role === 'coordinator'
+            ? '/coordinator'
+            : role === 'admin'
+              ? '/admin'
+              : '/adviser',
     },
   };
 }

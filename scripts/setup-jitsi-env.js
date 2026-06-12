@@ -49,6 +49,7 @@ function main() {
   fs.mkdirSync(path.join(jitsiDir, 'cfg'), { recursive: true });
   fs.writeFileSync(targetPath, content, 'utf8');
   console.log('Wrote docker/jitsi/.env with generated passwords.');
+  require('./sync-jitsi-branding');
 
   if (process.env.FORCE_JITSI_ENV === '1') {
     require('./reset-jitsi-config');

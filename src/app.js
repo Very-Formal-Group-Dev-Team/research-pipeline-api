@@ -23,6 +23,7 @@ const scheduleRouter = require('./modules/schedule/schedule.routes');
 const fileOperationsRouter = require('./modules/file_operations/file_operations.routes');
 const publicRouter = require('./modules/public/public.routes');
 const institutionsRouter = require('./modules/institutions/institutions.routes');
+const adminRouter = require('./modules/admin/admin.routes');
 const micRouter = require('./modules/mic/mic.routes');
 const app = express();
 
@@ -133,6 +134,7 @@ app.use('/api/coordinator', coordinatorRouter);
 app.use('/api/adviser', adviserRouter);
 app.use('/api/public', publicRouter);
 app.use('/api/institutions', institutionsRouter);
+app.use('/api/admin', adminRouter);
 app.use('/api', fileOperationsRouter);
 app.use('/api/file-operations', fileOperationsRouter);
 
