@@ -109,8 +109,18 @@ async function callKeywordModel(extractedText) {
 
 async function create(req, res) {
   try {
-    const { title, abstract, keywords, researchType, projectType, program, course, courseId, section } =
-      req.body;
+    const {
+      title,
+      abstract,
+      keywords,
+      researchType,
+      projectType,
+      program,
+      programId,
+      course,
+      courseId,
+      section,
+    } = req.body;
 
     if (!title || !title.trim()) {
       return res.status(400).json({ error: 'Project title is required' });
@@ -139,6 +149,7 @@ async function create(req, res) {
       researchType: researchType || 'ieee',
       projectType: normalizedProjectType,
       program: program || null,
+      programId: programId || null,
       course: course || null,
       courseId: courseId || null,
       section: section || null,
@@ -717,6 +728,8 @@ async function updateDetails(req, res) {
 
     const program =
       typeof req.body?.program === 'string' ? req.body.program.trim() || null : null;
+    const programId =
+      typeof req.body?.programId === 'string' ? req.body.programId.trim() || null : null;
     const course =
       typeof req.body?.course === 'string' ? req.body.course.trim() || null : null;
     const courseId =
@@ -729,6 +742,7 @@ async function updateDetails(req, res) {
       projectType,
       paperStandard,
       program,
+      programId,
       course,
       courseId,
       section,

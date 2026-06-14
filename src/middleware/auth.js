@@ -47,7 +47,12 @@ function normalizeDashboardRole(role) {
   if (!role || typeof role !== 'string') return null;
   const normalized = role.trim().toLowerCase();
   if (normalized === 'teacher') return 'adviser';
-  if (normalized === 'student' || normalized === 'adviser' || normalized === 'coordinator') {
+  if (
+    normalized === 'student'
+    || normalized === 'adviser'
+    || normalized === 'coordinator'
+    || normalized === 'admin'
+  ) {
     return normalized;
   }
   return null;
