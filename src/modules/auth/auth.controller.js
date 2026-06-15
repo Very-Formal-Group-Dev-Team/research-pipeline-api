@@ -1,26 +1,31 @@
 const crypto = require('crypto');
 const authService = require('./auth.service');
 
-function getCookieOptions() {
+function getCookieOptions(rememberMe = true) {
   const isProduction = process.env.NODE_ENV === 'production';
-  return {
+  const options = {
     httpOnly: true,
     secure: isProduction,
     sameSite: isProduction ? 'none' : 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
     path: '/',
   };
+
+  if (rememberMe) {
+    options.maxAge = 7 * 24 * 60 * 60 * 1000;
+  }
+
+  return options;
 }
 
 async function register(req, res) {
   const { email, password, full_name } = req.body;
 
   if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
+    return res.status(400).json({ error: 'Enter your email and password to continue.' });
   }
 
   if (password.length < 6) {
-    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    return res.status(400).json({ error: 'Use a password with at least 6 characters.' });
   }
 
   const result = await authService.registerWithEmail(email, password, full_name);
@@ -82,19 +87,20 @@ async function resendVerification(req, res) {
 }
 
 async function login(req, res) {
-  const { email, password } = req.body;
+  const { email, password, remember_me } = req.body;
 
   if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
+    return res.status(400).json({ error: 'Enter your email and password to continue.' });
   }
 
-  const result = await authService.loginWithEmail(email, password);
+  const rememberMe = remember_me === true;
+  const result = await authService.loginWithEmail(email, password, { rememberMe });
 
   if (result.error) {
     return res.status(401).json({ error: result.error });
   }
 
-  res.cookie('session_token', result.token, getCookieOptions());
+  res.cookie('session_token', result.token, getCookieOptions(rememberMe));
   return res.json({
     user: result.user,
     token: result.token,

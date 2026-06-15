@@ -15,11 +15,11 @@ function getVerificationEmailErrorMessage(err) {
   return 'Failed to send verification email. Please try again later.';
 }
 
-function generateToken(user) {
+function generateToken(user, { rememberMe = true } = {}) {
   return jwt.sign(
     { sub: user.id, email: user.email },
     process.env.JWT_SECRET,
-    { expiresIn: '7d' }
+    { expiresIn: rememberMe ? '7d' : '1d' }
   );
 }
 
@@ -48,9 +48,9 @@ async function registerWithEmail(email, password, fullName) {
         console.error('[auth] failed to resend verification email', err.message);
         return { error: getVerificationEmailErrorMessage(err) };
       }
-      return { pending: true, message: 'Verification email resent. Please check your inbox.' };
+      return { pending: true, message: 'We sent another verification email. Check your inbox.' };
     }
-    return { error: 'Email already registered' };
+    return { error: 'An account with this email already exists. Try signing in instead.' };
   }
 
   const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
@@ -139,10 +139,10 @@ async function resendVerification(email) {
     return { error: getVerificationEmailErrorMessage(err) };
   }
 
-  return { success: true, message: 'Verification email sent.' };
+  return { success: true, message: 'We sent a verification email. Check your inbox.' };
 }
 
-async function loginWithEmail(email, password) {
+async function loginWithEmail(email, password, { rememberMe = false } = {}) {
   const { rows } = await db.query(
     'SELECT id, email, full_name, avatar_url, password_hash, auth_provider, email_verified FROM users WHERE email = ? LIMIT 1',
     [email]
@@ -169,7 +169,7 @@ async function loginWithEmail(email, password) {
 
   console.log('[auth] email login success', { id: user.id, email: user.email });
 
-  const token = generateToken(user);
+  const token = generateToken(user, { rememberMe });
 
   return {
     user: { id: user.id, email: user.email, full_name: user.full_name, avatar_url: user.avatar_url },
