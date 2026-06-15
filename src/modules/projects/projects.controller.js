@@ -1048,6 +1048,143 @@ async function revertMainAdviserTransfer(req, res) {
   }
 }
 
+const CROSS_REF_ALLOWED_SORTS = new Set([
+  'publication_date:desc',
+  'publication_date:asc',
+  'relevance_score:desc',
+]);
+
+function parseCrossRefPage(value) {
+  const page = parseInt(String(value || '1'), 10);
+  if (!Number.isFinite(page) || page < 1) return 1;
+  return Math.min(page, 500);
+}
+
+function parseCrossRefPerPage(value) {
+  const perPage = parseInt(String(value || '20'), 10);
+  if (!Number.isFinite(perPage) || perPage < 1) return 20;
+  return Math.min(perPage, 100);
+}
+
+function parseCrossRefSort(value) {
+  const sort = String(value || 'relevance_score:desc').trim();
+  return CROSS_REF_ALLOWED_SORTS.has(sort) ? sort : 'relevance_score:desc';
+}
+
+function parseCrossRefYear(value) {
+  const raw = String(value || '').trim();
+  if (!/^\d{4}$/.test(raw)) return null;
+  return parseInt(raw, 10);
+}
+
+function resolveCrossRefToYear(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return new Date().getFullYear();
+  return parseCrossRefYear(raw);
+}
+
+function buildOpenAlexCrossRefFilters(fromYear, toYear) {
+  const filters = [];
+  if (fromYear) filters.push(`publication_year:>${fromYear - 1}`);
+  if (toYear) filters.push(`publication_year:<${toYear + 1}`);
+  return filters;
+}
+
+function buildOpenAlexCrossRefUrl({ searchTerm, page, perPage, sort, fromYear, toYear }) {
+  const params = new URLSearchParams();
+  params.set('search', searchTerm);
+  params.set('select', 'id,display_name,authorships,publication_date,primary_location,doi');
+  params.set('page', String(page));
+  params.set('per-page', String(perPage));
+  params.set('sort', sort);
+
+  const filters = buildOpenAlexCrossRefFilters(fromYear, toYear);
+  if (filters.length) {
+    params.set('filter', filters.join(','));
+  }
+
+  return `https://api.openalex.org/works?${params.toString()}`;
+}
+
+function buildOpenAlexRequestHeaders() {
+  const mailto = String(process.env.OPENALEX_MAILTO || '').trim();
+  const userAgent = mailto
+    ? `research-pipeline-api (mailto:${mailto})`
+    : 'research-pipeline-api';
+  return { 'User-Agent': userAgent, Accept: 'application/json' };
+}
+
+function sanitizeOpenAlexError(body, status) {
+  const trimmed = String(body || '').trim();
+  if (!trimmed || trimmed.startsWith('<')) {
+    return `OpenAlex is temporarily unavailable (HTTP ${status}). Please try again shortly.`;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed?.message === 'string' && parsed.message.trim()) {
+      return parsed.message.trim();
+    }
+    if (typeof parsed?.error === 'string' && parsed.error.trim()) {
+      return parsed.error.trim();
+    }
+  } catch {
+    // Fall through to generic message.
+  }
+
+  return `OpenAlex request failed (HTTP ${status})`;
+}
+
+async function fetchOpenAlexCrossRefWorks(url, { attempts = 2, timeoutMs = 25000 } = {}) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        headers: buildOpenAlexRequestHeaders(),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+
+      if (response.ok) {
+        return { response, payload: await response.json() };
+      }
+
+      const body = await response.text();
+      const retryable = response.status === 502 || response.status === 503 || response.status === 504;
+      lastError = {
+        status: response.status,
+        message: sanitizeOpenAlexError(body, response.status),
+        retryable,
+      };
+
+      if (!retryable || attempt === attempts) {
+        return { error: lastError };
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown OpenAlex connection error';
+      lastError = {
+        status: 502,
+        message: message.includes('timeout')
+          ? 'OpenAlex request timed out. Please try again with a narrower year range.'
+          : `OpenAlex is unreachable: ${message}`,
+        retryable: true,
+      };
+
+      if (attempt === attempts) {
+        return { error: lastError };
+      }
+    }
+  }
+
+  return {
+    error: lastError || {
+      status: 502,
+      message: 'OpenAlex request failed',
+      retryable: false,
+    },
+  };
+}
+
 async function crossReferenceStudies(req, res) {
   try {
     const projectId = req.params.id;
@@ -1077,25 +1214,38 @@ async function crossReferenceStudies(req, res) {
       return res.status(400).json({ error: 'No keywords found. Add keywords first before cross-referencing.' });
     }
 
-    const searchTerm = sanitizedKeywords.join(' ');
-    const params = new URLSearchParams({
-      search: searchTerm,
-      select: 'display_name,authorships,publication_date,primary_location,doi',
-    });
-    params.set('per-page', '20');
+    const page = parseCrossRefPage(req.query.page);
+    const perPage = parseCrossRefPerPage(req.query.perPage ?? req.query['per-page']);
+    const sort = parseCrossRefSort(req.query.sort);
+    const fromYear = parseCrossRefYear(req.query.fromYear);
+    const toYear = resolveCrossRefToYear(req.query.toYear);
 
-    const response = await fetch(`https://api.openalex.org/works?${params.toString()}`);
-    if (!response.ok) {
-      const body = await response.text();
-      return res.status(502).json({ error: `OpenAlex request failed: ${body || response.statusText}` });
+    const searchTerm = sanitizedKeywords.join(' ');
+    const openAlexUrl = buildOpenAlexCrossRefUrl({
+      searchTerm,
+      page,
+      perPage,
+      sort,
+      fromYear,
+      toYear,
+    });
+
+    const openAlexResult = await fetchOpenAlexCrossRefWorks(openAlexUrl);
+    if (openAlexResult.error) {
+      return res.status(502).json({ error: openAlexResult.error.message });
     }
 
-    const payload = await response.json();
+    const payload = openAlexResult.payload;
     const studies = Array.isArray(payload?.results) ? payload.results : [];
+    const total = typeof payload?.meta?.count === 'number' ? payload.meta.count : studies.length;
+    const hasMore = page * perPage < total;
 
     return res.json({
       query: searchTerm,
-      total: studies.length,
+      total,
+      page,
+      perPage,
+      hasMore,
       studies,
     });
   } catch (err) {
