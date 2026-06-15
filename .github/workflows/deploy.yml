@@ -1,0 +1,20 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches: [live]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy backend to DigitalOcean
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: 178.128.60.46
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /opt/archivum-api
+            git pull
+            docker compose up -d --build app
