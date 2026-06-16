@@ -1,7 +1,13 @@
 const {
   getProfileByUserId,
   updateMyProfile,
+  getDisplayPreferences,
+  updateDisplayPreferences,
 } = require('../users/users.service');
+const {
+  getNotificationPreferencesForUser,
+  updateNotificationPreferencesForUser,
+} = require('../notifications/notifications.service');
 
 async function getProfile(req, res) {
   const profile = await getProfileByUserId(req.user.id);
@@ -45,4 +51,44 @@ async function uploadAvatarSafe(req, res) {
   }
 }
 
-module.exports = { getProfile, patchProfile, uploadAvatar: uploadAvatarSafe };
+async function getNotificationPreferences(req, res) {
+  const preferences = await getNotificationPreferencesForUser(req.user.id);
+  return res.json({ preferences });
+}
+
+async function patchNotificationPreferences(req, res) {
+  const { preferences } = req.body || {};
+  const result = await updateNotificationPreferencesForUser(req.user.id, preferences);
+
+  if (result.error) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  return res.json({ preferences: result.data });
+}
+
+async function getDisplayPrefs(req, res) {
+  const result = await getDisplayPreferences(req.user.id);
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
+async function patchDisplayPrefs(req, res) {
+  const result = await updateDisplayPreferences(req.user.id, req.body || {});
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
+module.exports = {
+  getProfile,
+  patchProfile,
+  uploadAvatar: uploadAvatarSafe,
+  getNotificationPreferences,
+  patchNotificationPreferences,
+  getDisplayPrefs,
+  patchDisplayPrefs,
+};

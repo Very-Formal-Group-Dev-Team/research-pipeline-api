@@ -5,7 +5,7 @@ const {
   getUploadErrorStatus,
   getUploadErrorMessage,
 } = require('../../middleware/multer');
-const { getProfile, patchProfile, uploadAvatar } = require('./user.controller');
+const { getProfile, patchProfile, uploadAvatar, getNotificationPreferences, patchNotificationPreferences, getDisplayPrefs, patchDisplayPrefs } = require('./user.controller');
 
 const router = express.Router();
 
@@ -29,6 +29,10 @@ function handleAvatarUpload(req, res, next) {
 
 router.get('/profile', asyncHandler(getProfile));
 router.patch('/profile', asyncHandler(patchProfile));
+router.get('/notification-preferences', asyncHandler(getNotificationPreferences));
+router.patch('/notification-preferences', asyncHandler(patchNotificationPreferences));
+router.get('/display-preferences', asyncHandler(getDisplayPrefs));
+router.patch('/display-preferences', asyncHandler(patchDisplayPrefs));
 router.post('/avatar', handleAvatarUpload, asyncHandler(uploadAvatar));
 
 module.exports = router;
