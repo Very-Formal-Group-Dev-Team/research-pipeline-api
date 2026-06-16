@@ -121,6 +121,40 @@ async function logout(req, res) {
   return res.json({ success: true });
 }
 
+async function changePassword(req, res) {
+  const { current_password: currentPassword, new_password: newPassword } = req.body || {};
+
+  const result = await authService.changePassword(req.user.id, currentPassword, newPassword);
+
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+
+  return res.json({ success: true, message: result.message });
+}
+
+async function forgotPassword(req, res) {
+  const { email } = req.body || {};
+  const result = await authService.requestPasswordReset(email);
+
+  if (result.error) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  return res.json({ success: true, message: result.message });
+}
+
+async function resetPassword(req, res) {
+  const { token, new_password: newPassword } = req.body || {};
+  const result = await authService.resetPasswordWithToken(token, newPassword);
+
+  if (result.error) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  return res.json({ success: true, message: result.message });
+}
+
 function oAuthRedirect(req, res) {
   const { provider, redirectTo } = req.body;
 
@@ -215,6 +249,9 @@ module.exports = {
   logout,
   verifyEmail,
   resendVerification,
+  changePassword,
+  forgotPassword,
+  resetPassword,
   oAuthRedirect,
   googleCallback,
 };

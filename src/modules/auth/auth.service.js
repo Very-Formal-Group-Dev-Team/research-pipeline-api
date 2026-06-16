@@ -208,7 +208,7 @@ async function findOrCreateGoogleUser(profile) {
 
 async function getUserById(userId) {
   const { rows } = await db.query(
-    `SELECT u.id, u.email, u.full_name, u.avatar_url, u.auth_provider, u.status, ur.role
+    `SELECT u.id, u.email, u.full_name, u.avatar_url, u.auth_provider, u.status, u.email_verified, ur.role
      FROM users u
      LEFT JOIN user_roles ur ON ur.user_id = u.id
      WHERE u.id = ?
@@ -219,6 +219,137 @@ async function getUserById(userId) {
   return rows[0] || null;
 }
 
+async function createPasswordResetToken(userId) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + VERIFICATION_EXPIRY_HOURS * 60 * 60 * 1000);
+
+  await db.query(
+    `INSERT INTO password_reset_tokens (id, user_id, token, expires_at) VALUES (UUID(), ?, ?, ?)`,
+    [userId, token, expiresAt],
+  );
+
+  return token;
+}
+
+async function requestPasswordReset(email) {
+  if (!email || typeof email !== 'string') {
+    return { error: 'Email is required' };
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const { rows } = await db.query(
+    'SELECT id, email, auth_provider FROM users WHERE LOWER(email) = ? LIMIT 1',
+    [normalizedEmail],
+  );
+
+  if (rows.length === 0 || rows[0].auth_provider !== 'email') {
+    return {
+      success: true,
+      message: 'If an account exists for that email, we sent password reset instructions.',
+    };
+  }
+
+  const token = await createPasswordResetToken(rows[0].id);
+
+  try {
+    const { sendPasswordResetEmail } = require('./email.service');
+    await sendPasswordResetEmail(rows[0].email, token);
+  } catch (err) {
+    console.error('[auth] failed to send password reset email', err.message);
+    return { error: getVerificationEmailErrorMessage(err) };
+  }
+
+  return {
+    success: true,
+    message: 'If an account exists for that email, we sent password reset instructions.',
+  };
+}
+
+async function resetPasswordWithToken(token, newPassword) {
+  if (!token || typeof token !== 'string') {
+    return { error: 'Reset token is required' };
+  }
+
+  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
+    return { error: 'Password must be at least 6 characters' };
+  }
+
+  const { rows } = await db.query(
+    `SELECT t.id AS token_id, t.user_id, t.expires_at, t.used_at, u.auth_provider
+     FROM password_reset_tokens t
+     JOIN users u ON u.id = t.user_id
+     WHERE t.token = ?
+     LIMIT 1`,
+    [token],
+  );
+
+  if (rows.length === 0) {
+    return { error: 'Invalid or expired reset link.' };
+  }
+
+  const record = rows[0];
+
+  if (record.used_at) {
+    return { error: 'This reset link has already been used.' };
+  }
+
+  if (new Date(record.expires_at) < new Date()) {
+    return { error: 'This reset link has expired. Please request a new one.' };
+  }
+
+  if (record.auth_provider !== 'email') {
+    return { error: 'This account uses Google sign-in.' };
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+
+  await db.query('UPDATE password_reset_tokens SET used_at = NOW() WHERE id = ?', [record.token_id]);
+  await db.query(
+    'UPDATE users SET password_hash = ?, updated_at = NOW() WHERE id = ?',
+    [passwordHash, record.user_id],
+  );
+
+  return { success: true, message: 'Password reset successfully. You can now sign in.' };
+}
+
+async function changePassword(userId, currentPassword, newPassword) {
+  const { rows } = await db.query(
+    'SELECT id, password_hash, auth_provider FROM users WHERE id = ? LIMIT 1',
+    [userId],
+  );
+
+  if (rows.length === 0) {
+    return { error: 'User not found', status: 404 };
+  }
+
+  const user = rows[0];
+
+  if (user.auth_provider !== 'email' || !user.password_hash) {
+    return { error: 'Password changes are only available for email sign-in accounts' };
+  }
+
+  if (!currentPassword || !newPassword) {
+    return { error: 'Current password and new password are required' };
+  }
+
+  if (typeof newPassword !== 'string' || newPassword.length < 6) {
+    return { error: 'New password must be at least 6 characters' };
+  }
+
+  const valid = await bcrypt.compare(currentPassword, user.password_hash);
+  if (!valid) {
+    return { error: 'Current password is incorrect', status: 401 };
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+  await db.query(
+    'UPDATE users SET password_hash = ?, updated_at = NOW() WHERE id = ?',
+    [passwordHash, userId],
+  );
+
+  return { success: true, message: 'Password updated successfully' };
+}
+
 module.exports = {
   generateToken,
   registerWithEmail,
@@ -227,4 +358,7 @@ module.exports = {
   getUserById,
   verifyEmailToken,
   resendVerification,
+  changePassword,
+  requestPasswordReset,
+  resetPasswordWithToken,
 };
