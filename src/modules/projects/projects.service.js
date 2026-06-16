@@ -125,9 +125,21 @@ async function createProject({
   }
 }
 
+function resolveProjectProgramName(row) {
+  const legacy = typeof row.program === 'string' ? row.program.trim() : '';
+  const fromCatalog =
+    typeof row.program_catalog_name === 'string' ? row.program_catalog_name.trim() : '';
+  const project = { ...row };
+  delete project.program_catalog_name;
+  project.program = legacy || fromCatalog || null;
+  return project;
+}
+
 async function getProjectsByUser(userId) {
   const { rows } = await db.query(
     `SELECT p.*,
+            c.code AS course_code,
+            pr.name AS program_catalog_name,
             (
               SELECT pm.role
               FROM project_members pm
@@ -138,6 +150,8 @@ async function getProjectsByUser(userId) {
               LIMIT 1
             ) AS member_role
      FROM projects p
+     LEFT JOIN courses c ON p.course_id = c.id
+     LEFT JOIN programs pr ON p.program_id = pr.id
      WHERE p.created_by = ?
         OR EXISTS (
           SELECT 1
@@ -149,12 +163,22 @@ async function getProjectsByUser(userId) {
      ORDER BY p.created_at DESC`,
     [userId, userId, userId]
   );
-  return rows;
+  return rows.map(resolveProjectProgramName);
 }
 
 async function getProjectById(projectId) {
-  const { rows } = await db.query('SELECT * FROM projects WHERE id = ?', [projectId]);
-  return rows[0] || null;
+  const { rows } = await db.query(
+    `SELECT p.*,
+            c.code AS course_code,
+            pr.name AS program_catalog_name
+     FROM projects p
+     LEFT JOIN courses c ON p.course_id = c.id
+     LEFT JOIN programs pr ON p.program_id = pr.id
+     WHERE p.id = ?
+     LIMIT 1`,
+    [projectId],
+  );
+  return rows[0] ? resolveProjectProgramName(rows[0]) : null;
 }
 
 async function getProjectMembers(projectId) {
@@ -884,17 +908,22 @@ async function removeProjectMember(projectId, memberId, requestedByUserId) {
 
 async function getAdvisedProjects(userId) {
   const { rows } = await db.query(
-    `SELECT DISTINCT p.*, pm.role AS member_role
+    `SELECT DISTINCT p.*,
+            c.code AS course_code,
+            pr.name AS program_catalog_name,
+            pm.role AS member_role
      FROM projects p
      INNER JOIN project_members pm
        ON pm.project_id = p.id
       AND pm.user_id = ?
       AND pm.status = 'accepted'
       AND pm.role = 'adviser'
+     LEFT JOIN courses c ON p.course_id = c.id
+     LEFT JOIN programs pr ON p.program_id = pr.id
      ORDER BY p.created_at DESC`,
     [userId],
   );
-  return rows;
+  return rows.map(resolveProjectProgramName);
 }
 
 function parseScheduleStart(row) {
