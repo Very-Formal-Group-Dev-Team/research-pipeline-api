@@ -86,4 +86,61 @@ async function sendVerificationEmail(to, token) {
   });
 }
 
-module.exports = { sendVerificationEmail };
+async function sendPasswordResetEmail(to, token) {
+  const smtp = getSmtpConfig();
+  const webOrigin = process.env.WEB_ORIGIN || 'http://localhost:3000';
+  const resetUrl = `${webOrigin}/reset-password?token=${encodeURIComponent(token)}`;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;font-family:system-ui,-apple-system,sans-serif;background:#f9f9f6">
+  <div style="max-width:480px;margin:40px auto;background:#fff;border:1px solid #e5e5e0;border-radius:8px;overflow:hidden">
+    <div style="background:#2C3E6B;padding:24px 32px">
+      <h1 style="margin:0;color:#fff;font-size:20px;font-weight:600">Archivum</h1>
+    </div>
+    <div style="padding:32px">
+      <p style="margin:0 0 16px;color:#1e293b;font-size:15px;line-height:1.6">
+        Reset your password using the link below.
+      </p>
+      <a href="${resetUrl}" style="display:inline-block;background:#2C3E6B;color:#fff;text-decoration:none;padding:12px 28px;border-radius:6px;font-size:14px;font-weight:600">
+        Reset Password
+      </a>
+      <p style="margin:24px 0 0;color:#64748b;font-size:13px;line-height:1.5">
+        Or copy this link:<br>
+        <span style="color:#2C3E6B;word-break:break-all">${resetUrl}</span>
+      </p>
+      <p style="margin:20px 0 0;color:#94a3b8;font-size:12px">
+        This link expires in 24 hours. If you did not request a reset, ignore this email.
+      </p>
+    </div>
+  </div>
+</body>
+</html>`.trim();
+
+  const text = `Reset your Archivum password\n\n${resetUrl}\n\nThis link expires in 24 hours.`;
+
+  const transporter = nodemailer.createTransport({
+    host: smtp.host,
+    port: smtp.port,
+    secure: smtp.secure,
+    auth: {
+      user: smtp.user,
+      pass: smtp.pass,
+    },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
+  });
+
+  await transporter.sendMail({
+    from: smtp.from,
+    to,
+    subject: 'Reset your password — Archivum',
+    text,
+    html,
+  });
+}
+
+module.exports = { sendVerificationEmail, sendPasswordResetEmail };

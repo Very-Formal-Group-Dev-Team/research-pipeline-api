@@ -102,9 +102,36 @@ function normalizeDefenseTimeRange(row) {
 
   return {
     ...row,
-    start_time: start,
-    end_time: end,
+    scheduled_at: formatDefenseDateTimeForApi(row.scheduled_at),
+    start_time: formatDefenseDateTimeForApi(start),
+    end_time: formatDefenseDateTimeForApi(end),
   };
+}
+
+function formatDefenseDateTimeForApi(value) {
+  if (value == null) return null;
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    const localNoZone = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(:\d{2})?$/;
+    const localMatch = trimmed.match(localNoZone);
+    if (localMatch) {
+      return `${localMatch[1]}T${localMatch[2]}${localMatch[3] || ':00'}`;
+    }
+
+    return trimmed.replace(/Z$/i, '').substring(0, 19);
+  }
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const normalized = normalizeDateTimeInput(value);
+    if (!normalized) return null;
+    const dbValue = normalized.dbValue;
+    return dbValue.replace(' ', 'T');
+  }
+
+  return null;
 }
 
 function toDate(value) {
@@ -132,7 +159,7 @@ function normalizeDateTimeInput(value) {
   if (!trimmed) return null;
 
   // Keep local wall-clock values unchanged for DATETIME columns.
-  const localNoZone = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(:\d{2})?$/;
+  const localNoZone = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(:\d{2})?$/;
   const localMatch = trimmed.match(localNoZone);
   if (localMatch) {
     const datePart = localMatch[1];
@@ -867,9 +894,9 @@ async function getPendingDefenses(institutionId) {
   const { rows } = await db.query(
     `SELECT d.*, p.title AS project_title, p.project_code, p.course_id,
             c.course_name, c.code AS course_code,
-            ${scheduleExpr} AS scheduled_at,
-            ${scheduleExpr} AS start_time,
-            COALESCE(d.end_time, ${scheduleExpr}) AS end_time,
+            DATE_FORMAT(${scheduleExpr}, '%Y-%m-%dT%H:%i:%s') AS scheduled_at,
+            DATE_FORMAT(${scheduleExpr}, '%Y-%m-%dT%H:%i:%s') AS start_time,
+            DATE_FORMAT(COALESCE(d.end_time, ${scheduleExpr}), '%Y-%m-%dT%H:%i:%s') AS end_time,
             u.full_name AS created_by_name,
             ${DEFENSE_PANELIST_NAMES_SQL},
             ${DEFENSE_PANELIST_IDS_SQL}
@@ -886,14 +913,12 @@ async function getPendingDefenses(institutionId) {
 }
 
 async function getAllDefensesForInstitution(institutionId) {
-  const scheduleExpr = await getDefenseScheduleExpr();
-
   const { rows } = await db.query(
     `SELECT d.*, p.title AS project_title, p.project_code, p.course_id,
             c.course_name, c.code AS course_code,
-            ${scheduleExpr} AS scheduled_at,
-            ${scheduleExpr} AS start_time,
-            COALESCE(d.end_time, ${scheduleExpr}) AS end_time,
+            DATE_FORMAT(d.scheduled_at, '%Y-%m-%dT%H:%i:%s') AS scheduled_at,
+            DATE_FORMAT(d.scheduled_at, '%Y-%m-%dT%H:%i:%s') AS start_time,
+            DATE_FORMAT(COALESCE(d.end_time, d.scheduled_at), '%Y-%m-%dT%H:%i:%s') AS end_time,
             u.full_name AS created_by_name,
             (
               SELECT u2.full_name
@@ -912,7 +937,7 @@ async function getAllDefensesForInstitution(institutionId) {
      LEFT JOIN courses c ON p.course_id = c.id
      LEFT JOIN users u ON d.created_by = u.id
      WHERE ${coordinatorProjectScopeSql('p', 'c')}
-     ORDER BY ${scheduleExpr} DESC`,
+     ORDER BY d.scheduled_at DESC`,
     coordinatorProjectScopeBinds(institutionId)
   );
   return rows.map(normalizeDefenseTimeRange);
@@ -944,7 +969,10 @@ async function verifyDefense(
 
     // Get current defense with project info
     const [defenseRows] = await conn.execute(
-      `SELECT d.*, p.title AS project_title, c.institution_id
+      `SELECT d.*,
+              DATE_FORMAT(d.scheduled_at, '%Y-%m-%d %H:%i:%s') AS scheduled_at_wall,
+              DATE_FORMAT(d.end_time, '%Y-%m-%d %H:%i:%s') AS end_time_wall,
+              p.title AS project_title, c.institution_id
        FROM defenses d
        LEFT JOIN projects p ON d.project_id = p.id
        LEFT JOIN courses c ON p.course_id = c.id
@@ -957,15 +985,31 @@ async function verifyDefense(
       return { error: 'Defense not found' };
     }
 
-    const proposedStart = verifiedSchedule || defense.scheduled_at;
-    const proposedEnd = verifiedEndTime || defense.end_time || proposedStart;
+    const existingStart = defense.scheduled_at_wall || defense.scheduled_at;
+    const existingEnd = defense.end_time_wall || defense.end_time || existingStart;
 
-    const proposedStartDate = toDate(proposedStart);
-    const proposedEndDate = toDate(proposedEnd);
-    if (!proposedStartDate || !proposedEndDate || proposedEndDate <= proposedStartDate) {
+    const startInput = verifiedSchedule != null && verifiedSchedule !== ''
+      ? verifiedSchedule
+      : existingStart;
+    const endInput = verifiedEndTime != null && verifiedEndTime !== ''
+      ? verifiedEndTime
+      : existingEnd;
+
+    const scheduleWindow = getScheduleWindow({
+      start_time: startInput,
+      end_time: endInput,
+    });
+    if (scheduleWindow.error) {
       await conn.rollback();
-      return { error: 'Invalid schedule range' };
+      return { error: scheduleWindow.error };
     }
+
+    const normalizedStart = scheduleWindow.start;
+    const normalizedEnd = scheduleWindow.end;
+    const proposedStartDb = normalizedStart.dbValue;
+    const proposedEndDb = normalizedEnd.dbValue;
+    const proposedStartDate = normalizedStart.dateValue;
+    const proposedEndDate = normalizedEnd.dateValue;
 
     const resolvedDefenseType = defenseType || defense_type || defense.defense_type;
     if (!['proposal', 'midterm', 'final'].includes(resolvedDefenseType)) {
@@ -1038,8 +1082,8 @@ async function verifyDefense(
       projectId: defense.project_id,
       memberIds: conflictMemberIds,
       location: targetLocation,
-      startAt: proposedStart,
-      endAt: proposedEnd,
+      startAt: proposedStartDb,
+      endAt: proposedEndDb,
       queryRunner: conn,
     });
 
@@ -1062,7 +1106,13 @@ async function verifyDefense(
       notifType = 'defense_approved';
     } else {
       // No conflict and no special handling - schedule immediately
-      const scheduleMoved = verifiedSchedule && verifiedSchedule !== defense.scheduled_at?.toISOString?.();
+      const existingStartNorm = normalizeDateTimeInput(existingStart);
+      const scheduleMoved = Boolean(
+        verifiedSchedule != null
+        && verifiedSchedule !== ''
+        && existingStartNorm
+        && proposedStartDb !== existingStartNorm.dbValue,
+      );
       const activeStatuses = ['scheduled', 'moved', 'approved'];
       if (activeStatuses.includes(defense.status)) {
         newStatus = scheduleMoved ? 'moved' : defense.status;
@@ -1100,9 +1150,9 @@ async function verifyDefense(
         resolvedModality,
         resolvedDefenseType,
         resolvedRubricId,
-        proposedStart,
-        proposedEnd,
-        proposedStart,
+        proposedStartDb,
+        proposedEndDb,
+        proposedStartDb,
         newStatus,
         jitsi.meeting_room,
         jitsi.meeting_url,
@@ -1122,8 +1172,8 @@ async function verifyDefense(
       [
         defenseId,
         coordinatorId,
-        defense.scheduled_at,
-        proposedStart,
+        defense.scheduled_at_wall || defense.scheduled_at,
+        proposedStartDb,
         defense.venue || defense.location,
         resolvedVenue || resolvedLocation,
         notes || null,
@@ -1133,9 +1183,9 @@ async function verifyDefense(
     // Notify all project members
     const members = memberRows;
 
-    const finalSchedule = proposedStart;
-    const dateStr = new Date(finalSchedule).toLocaleDateString();
-    const timeStr = new Date(finalSchedule).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const finalSchedule = proposedStartDate;
+    const dateStr = finalSchedule.toLocaleDateString();
+    const timeStr = finalSchedule.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     let notifTitle = 'Defense Approved';
     let notifMessage = `The ${defense.defense_type} defense for "${defense.project_title}" has been approved for ${dateStr} at ${timeStr} (${resolvedModality}).`;

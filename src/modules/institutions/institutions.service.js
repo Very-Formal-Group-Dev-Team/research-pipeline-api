@@ -186,6 +186,93 @@ async function getCourseForInstitution(institutionId, courseId) {
   return rows[0] || null;
 }
 
+async function generateUniqueProgramCode(institutionId, programName) {
+  const words = String(programName || '')
+    .trim()
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((word) => word.toUpperCase());
+  let base = words.join('_').slice(0, 50) || 'PROGRAM';
+  if (base.length < 2) {
+    base = 'PROGRAM';
+  }
+
+  for (let suffix = 0; suffix < 100; suffix += 1) {
+    const code =
+      suffix === 0
+        ? base
+        : `${base.slice(0, Math.max(2, 20 - String(suffix).length - 1))}_${suffix}`;
+    const { rows } = await db.query(
+      'SELECT id FROM programs WHERE institution_id = ? AND code = ? LIMIT 1',
+      [institutionId, code],
+    );
+    if (!rows.length) {
+      return code;
+    }
+  }
+
+  throw new Error('Unable to generate unique program code');
+}
+
+async function materializeLegacyPrograms(institutionId) {
+  if (!institutionId) return;
+
+  const { rows: legacyNames } = await db.query(
+    `SELECT DISTINCT TRIM(program) AS program_name
+     FROM projects
+     WHERE institution_id = ?
+       AND program_id IS NULL
+       AND TRIM(IFNULL(program, '')) != ''`,
+    [institutionId],
+  );
+
+  for (const row of legacyNames) {
+    const programName = row.program_name;
+    if (!programName) continue;
+
+    const { rows: existingByName } = await db.query(
+      `SELECT id FROM programs
+       WHERE institution_id = ? AND LOWER(name) = LOWER(?)
+       LIMIT 1`,
+      [institutionId, programName],
+    );
+
+    let programId = existingByName[0]?.id;
+
+    if (!programId) {
+      const code = await generateUniqueProgramCode(institutionId, programName);
+      const created = await createProgram(institutionId, {
+        name: programName,
+        code,
+        description: null,
+      });
+
+      if (created.error) {
+        const { rows: retry } = await db.query(
+          `SELECT id FROM programs
+           WHERE institution_id = ? AND LOWER(name) = LOWER(?)
+           LIMIT 1`,
+          [institutionId, programName],
+        );
+        programId = retry[0]?.id;
+      } else {
+        programId = created.data?.id;
+      }
+    }
+
+    if (programId) {
+      await db.query(
+        `UPDATE projects
+         SET program_id = ?
+         WHERE institution_id = ?
+           AND program_id IS NULL
+           AND LOWER(TRIM(program)) = LOWER(?)`,
+        [programId, institutionId, programName],
+      );
+    }
+  }
+}
+
 async function getProgramsByInstitutionId(institutionId, { activeOnly = true } = {}) {
   const institution = await getInstitutionById(institutionId, { activeOnly });
   if (!institution) {
@@ -329,6 +416,7 @@ module.exports = {
   getProgramsByInstitutionId,
   getProgramForInstitution,
   listProgramsForInstitution,
+  materializeLegacyPrograms,
   createProgram,
   updateProgram,
 };

@@ -11,6 +11,9 @@ const NOTIFICATION_TYPES = new Set([
   'join_request',
   'member_left',
   'ownership_transferred',
+  'paper_version_committed',
+  'review_requested',
+  'review_completed',
 ]);
 
 function parseNotificationMetadata(metadata) {
@@ -127,8 +130,80 @@ async function upsertUnreadProjectStageNotification({
   return { action: 'created' };
 }
 
+async function isNotificationEnabled(userId, type, conn = null) {
+  const sql = `
+    SELECT enabled
+    FROM user_notification_preferences
+    WHERE user_id = ? AND type = ?
+    LIMIT 1
+  `;
+
+  let rows;
+  if (conn) {
+    const [result] = await conn.execute(sql, [userId, type]);
+    rows = result;
+  } else {
+    const result = await db.query(sql, [userId, type]);
+    rows = result.rows;
+  }
+
+  if (!rows || rows.length === 0) {
+    return true;
+  }
+
+  return Boolean(rows[0].enabled);
+}
+
+function getDefaultNotificationPreferences() {
+  return [...NOTIFICATION_TYPES].map((type) => ({ type, enabled: true }));
+}
+
+async function getNotificationPreferencesForUser(userId) {
+  const { rows } = await db.query(
+    'SELECT type, enabled FROM user_notification_preferences WHERE user_id = ?',
+    [userId],
+  );
+
+  const overrides = new Map(rows.map((row) => [row.type, Boolean(row.enabled)]));
+  return getDefaultNotificationPreferences().map((pref) => ({
+    type: pref.type,
+    enabled: overrides.has(pref.type) ? overrides.get(pref.type) : true,
+  }));
+}
+
+async function updateNotificationPreferencesForUser(userId, preferences) {
+  if (!Array.isArray(preferences) || preferences.length === 0) {
+    return { error: 'preferences must be a non-empty array' };
+  }
+
+  for (const pref of preferences) {
+    if (!pref || typeof pref.type !== 'string' || !NOTIFICATION_TYPES.has(pref.type)) {
+      return { error: `Invalid notification type: ${pref?.type}` };
+    }
+    if (typeof pref.enabled !== 'boolean') {
+      return { error: `enabled must be a boolean for type: ${pref.type}` };
+    }
+  }
+
+  for (const pref of preferences) {
+    await db.query(
+      `INSERT INTO user_notification_preferences (id, user_id, type, enabled, created_at, updated_at)
+       VALUES (UUID(), ?, ?, ?, NOW(), NOW())
+       ON DUPLICATE KEY UPDATE enabled = VALUES(enabled), updated_at = NOW()`,
+      [userId, pref.type, pref.enabled ? 1 : 0],
+    );
+  }
+
+  return { data: await getNotificationPreferencesForUser(userId) };
+}
+
 async function createNotification({ userId, type, title, message, metadata, conn = null }) {
   const notificationType = NOTIFICATION_TYPES.has(type) ? type : 'invitation';
+
+  const enabled = await isNotificationEnabled(userId, notificationType, conn);
+  if (!enabled) {
+    return;
+  }
 
   const sql = `INSERT INTO notifications (user_id, type, title, message, metadata)
      VALUES (?, ?, ?, ?, ?)`;
@@ -250,10 +325,13 @@ async function deleteJoinRequestNotifications({ userId, projectId, memberId, con
 }
 
 module.exports = {
+  NOTIFICATION_TYPES,
   createNotification,
   findUnreadProjectStageNotification,
   upsertUnreadProjectStageNotification,
   getNotificationsForUser,
+  getNotificationPreferencesForUser,
+  updateNotificationPreferencesForUser,
   markNotificationAsRead,
   markAllNotificationsAsRead,
   deleteProjectInvitationNotifications,

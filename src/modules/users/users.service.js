@@ -34,7 +34,11 @@ async function getProfileByUserId(userId) {
       u.avatar_url,
       u.status,
       u.status_text,
-      ur.role
+      u.auth_provider,
+      u.email_verified,
+      ur.role,
+      ur.institution_id,
+      i.name AS institution_name
     FROM users u
     LEFT JOIN user_roles ur
       ON ur.user_id = u.id
@@ -45,6 +49,7 @@ async function getProfileByUserId(userId) {
         ORDER BY ur2.created_at DESC
         LIMIT 1
       )
+    LEFT JOIN institutions i ON i.id = ur.institution_id
     WHERE u.id = ?
     LIMIT 1
   `;
@@ -225,14 +230,7 @@ async function completeProfile(userId, payload) {
   return {
     data: {
       success: true,
-      redirectPath:
-        role === 'student'
-          ? '/student'
-          : role === 'coordinator'
-            ? '/coordinator'
-            : role === 'admin'
-              ? '/admin'
-              : '/adviser',
+      redirectPath: '/onboarding/welcome',
     },
   };
 }
@@ -294,6 +292,84 @@ async function searchUsersByEmail(email, role, limit = 10, excludeUserId = null)
   return rows;
 }
 
+const ALLOWED_THEME_VALUES = new Set(['light', 'dark', 'system']);
+
+function normalizeThemePreference(value) {
+  if (!value || typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  return ALLOWED_THEME_VALUES.has(normalized) ? normalized : null;
+}
+
+function normalizeTimezone(value) {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 64) return undefined;
+  return trimmed;
+}
+
+async function getDisplayPreferences(userId) {
+  const { rows } = await db.query(
+    'SELECT theme_preference, timezone FROM users WHERE id = ? LIMIT 1',
+    [userId],
+  );
+
+  if (!rows[0]) {
+    return { error: 'User not found', status: 404 };
+  }
+
+  return {
+    data: {
+      theme: rows[0].theme_preference || null,
+      timezone: rows[0].timezone || null,
+    },
+  };
+}
+
+async function updateDisplayPreferences(userId, payload) {
+  const theme = payload.theme !== undefined ? normalizeThemePreference(payload.theme) : undefined;
+  const timezone = payload.timezone !== undefined ? normalizeTimezone(payload.timezone) : undefined;
+
+  if (payload.theme !== undefined && !theme) {
+    return { error: 'theme must be one of: light, dark, system' };
+  }
+
+  if (payload.timezone !== undefined && timezone === undefined) {
+    return { error: 'timezone must be a string of 64 characters or fewer' };
+  }
+
+  const updates = [];
+  const params = [];
+
+  if (payload.theme !== undefined) {
+    updates.push('theme_preference = ?');
+    params.push(theme);
+  }
+
+  if (payload.timezone !== undefined) {
+    updates.push('timezone = ?');
+    params.push(timezone);
+  }
+
+  if (updates.length === 0) {
+    return { error: 'No supported fields to update' };
+  }
+
+  updates.push('updated_at = NOW()');
+  params.push(userId);
+
+  const result = await db.query(
+    `UPDATE users SET ${updates.join(', ')} WHERE id = ?`,
+    params,
+  );
+
+  if (!result.rows || result.rows.affectedRows === 0) {
+    return { error: 'User not found', status: 404 };
+  }
+
+  return getDisplayPreferences(userId);
+}
+
 module.exports = {
   completeProfile,
   getProfileByUserId,
@@ -301,4 +377,6 @@ module.exports = {
   profileExists,
   searchUsersByEmail,
   updateMyProfile,
+  getDisplayPreferences,
+  updateDisplayPreferences,
 };
