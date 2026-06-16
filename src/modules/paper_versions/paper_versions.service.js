@@ -1,4 +1,5 @@
 const db = require('../../../config/db');
+const notificationsService = require('../notifications/notifications.service');
 
 /** Return the next version number for a project (max + 1, or 1 if none). */
 async function getNextVersionNumber(projectId) {
@@ -12,6 +13,59 @@ async function getNextVersionNumber(projectId) {
 /** Bump project.updated_at (timeline "Last updated" on project detail pages). */
 async function touchProjectUpdatedAt(projectId) {
   await db.query('UPDATE projects SET updated_at = NOW() WHERE id = ?', [projectId]);
+}
+
+async function notifyStudentMembersOfPaperCommit({
+  projectId,
+  versionNumber,
+  commitMessage,
+  uploadedBy,
+  fileName,
+}) {
+  const { rows: contextRows } = await db.query(
+    `SELECT p.title, u.full_name AS uploader_name
+     FROM projects p
+     JOIN users u ON u.id = ?
+     WHERE p.id = ?
+     LIMIT 1`,
+    [uploadedBy, projectId],
+  );
+
+  const projectTitle = contextRows[0]?.title || 'your project';
+  const uploaderName = contextRows[0]?.uploader_name || 'A team member';
+
+  const { rows: memberRows } = await db.query(
+    `SELECT user_id
+     FROM project_members
+     WHERE project_id = ?
+       AND status = 'accepted'
+       AND role IN ('leader', 'member')
+       AND user_id != ?`,
+    [projectId, uploadedBy],
+  );
+
+  const recipients = memberRows.map((row) => row.user_id).filter(Boolean);
+  if (!recipients.length) return;
+
+  const message = `${uploaderName} committed version ${versionNumber} to "${projectTitle}": ${commitMessage}`;
+
+  await Promise.all(
+    recipients.map((userId) =>
+      notificationsService.createNotification({
+        userId,
+        type: 'paper_version_committed',
+        title: 'New document commit',
+        message,
+        metadata: {
+          projectId,
+          versionNumber,
+          commitMessage,
+          uploadedBy,
+          fileName,
+        },
+      }),
+    ),
+  );
 }
 
 /** Insert a new paper version row. */
@@ -38,6 +92,14 @@ async function createPaperVersion({ projectId, fileUrl, fileName, fileSize, mime
   );
 
   await touchProjectUpdatedAt(projectId);
+
+  await notifyStudentMembersOfPaperCommit({
+    projectId,
+    versionNumber,
+    commitMessage,
+    uploadedBy,
+    fileName,
+  });
 
   return versionNumber;
 }

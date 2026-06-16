@@ -2,6 +2,7 @@ const express = require('express');
 const { requireAuth } = require('../../middleware/auth');
 const { createDocumentUpload } = require('../../middleware/multer');
 const controller = require('./paper_versions.controller');
+const paperReviewsController = require('../paper_reviews/paper_reviews.controller');
 
 const router = express.Router({ mergeParams: true });
 
@@ -27,6 +28,7 @@ router.use(requireAuth);
 router.get('/', asyncHandler(controller.list));
 router.post('/', handleDocumentUpload, asyncHandler(controller.upload));
 router.post('/generate', asyncHandler(controller.generate));
+router.post('/:versionId/request-review', asyncHandler(paperReviewsController.requestReview));
 router.get('/:versionId/download', asyncHandler(controller.download));
 router.get('/:versionId/diff', asyncHandler(controller.diff));
 

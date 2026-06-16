@@ -14,6 +14,7 @@ router.use(requireAuth);
 router.use(asyncHandler(controller.requireAdviser));
 
 router.get('/rubrics', asyncHandler(controller.listRubrics));
+router.get('/pending-reviews', asyncHandler(controller.listPendingReviews));
 router.get('/rubrics/:rubricId', asyncHandler(controller.getRubric));
 router.post('/rubrics', asyncHandler(controller.createRubric));
 router.put('/rubrics/:rubricId', asyncHandler(controller.updateRubric));

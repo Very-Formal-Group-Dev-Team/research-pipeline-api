@@ -11,6 +11,9 @@ const NOTIFICATION_TYPES = new Set([
   'join_request',
   'member_left',
   'ownership_transferred',
+  'paper_version_committed',
+  'review_requested',
+  'review_completed',
 ]);
 
 function parseNotificationMetadata(metadata) {
