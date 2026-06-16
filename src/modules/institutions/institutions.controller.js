@@ -18,6 +18,8 @@ async function getMyInstitutionPrograms(req, res) {
     return res.status(400).json({ error: 'No institution linked to your account' });
   }
 
+  await institutionsService.materializeLegacyPrograms(institutionId);
+
   const result = await institutionsService.getProgramsByInstitutionId(institutionId, {
     activeOnly: true,
   });
