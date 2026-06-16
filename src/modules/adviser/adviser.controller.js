@@ -1,4 +1,5 @@
 const adviserService = require('./adviser.service');
+const paperReviewsController = require('../paper_reviews/paper_reviews.controller');
 
 async function requireAdviser(req, res, next) {
   const institution = await adviserService.getInstitutionByAdviser(req.user.id);
@@ -63,6 +64,10 @@ async function deleteRubric(req, res) {
   return res.json(result.data);
 }
 
+async function listPendingReviews(req, res) {
+  return paperReviewsController.listPendingReviews(req, res);
+}
+
 module.exports = {
   requireAdviser,
   listRubrics,
@@ -70,4 +75,5 @@ module.exports = {
   createRubric,
   updateRubric,
   deleteRubric,
+  listPendingReviews,
 };
