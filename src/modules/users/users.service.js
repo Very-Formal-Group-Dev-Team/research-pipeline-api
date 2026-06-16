@@ -225,14 +225,7 @@ async function completeProfile(userId, payload) {
   return {
     data: {
       success: true,
-      redirectPath:
-        role === 'student'
-          ? '/student'
-          : role === 'coordinator'
-            ? '/coordinator'
-            : role === 'admin'
-              ? '/admin'
-              : '/adviser',
+      redirectPath: '/onboarding/welcome',
     },
   };
 }
