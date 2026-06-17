@@ -144,3 +144,4 @@ async function sendPasswordResetEmail(to, token) {
 }
 
 module.exports = { sendVerificationEmail, sendPasswordResetEmail };
+
