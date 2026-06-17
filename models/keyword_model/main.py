@@ -72,12 +72,30 @@ def clean_text(text: str) -> str:
     return " ".join(filtered)
 
 
+def _rerank_keywords_by_category(
+    model: Any,
+    top_class_index: int,
+    feature_names: Any,
+    vector_values: np.ndarray,
+    top_k: int,
+) -> list[str]:
+    estimators = getattr(model, "estimators_", None)
+    if estimators is None or top_class_index >= len(estimators):
+        indices = np.argsort(vector_values)[::-1]
+        return [str(feature_names[i]) for i in indices[:top_k] if vector_values[i] > 0]
+    coef = np.ravel(estimators[top_class_index].coef_)
+    combined = vector_values * coef
+    indices = np.argsort(combined)[::-1]
+    return [str(feature_names[i]) for i in indices[:top_k] if vector_values[i] > 0]
+
+
 def predict_with_vectorization(text: str, top_k: int = 5) -> dict[str, Any]:
     cleaned = clean_text(text)
     if not cleaned:
         return {
             "keywords": [],
             "predicted_labels": [],
+            "predicted_fields": [],
             "vectorization": {"shape": [1, 0], "non_zero": 0, "top_terms": []},
         }
 
@@ -100,6 +118,11 @@ def predict_with_vectorization(text: str, top_k: int = 5) -> dict[str, Any]:
 
     ranked_indices = np.argsort(scores)[::-1]
     predicted_labels = [str(classes[i]) for i in ranked_indices[:top_k] if scores[i] > 0]
+    predicted_fields = [
+        {"label": str(classes[i]), "confidence": float(scores[i])}
+        for i in ranked_indices[:top_k]
+        if scores[i] > 0
+    ]
 
     feature_names = vectorizer.get_feature_names_out()
     vector_values = x_matrix.toarray()[0]
@@ -110,10 +133,17 @@ def predict_with_vectorization(text: str, top_k: int = 5) -> dict[str, Any]:
         if vector_values[i] > 0
     ]
 
-    keywords = [item["term"] for item in top_terms[:top_k]]
+    if ranked_indices.size > 0 and scores[ranked_indices[0]] > 0:
+        keywords = _rerank_keywords_by_category(
+            model, int(ranked_indices[0]), feature_names, vector_values, top_k
+        )
+    else:
+        keywords = [item["term"] for item in top_terms[:top_k]]
+
     return {
         "keywords": keywords,
         "predicted_labels": predicted_labels,
+        "predicted_fields": predicted_fields,
         "vectorization": {
             "shape": [int(x_matrix.shape[0]), int(x_matrix.shape[1])],
             "non_zero": int(x_matrix.nnz),
@@ -127,8 +157,15 @@ class PredictRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20)
 
 
+class PredictedField(BaseModel):
+    label: str
+    confidence: float
+
+
 class PredictResponse(BaseModel):
     keywords: list[str]
+    predicted_labels: list[str]
+    predicted_fields: list[PredictedField]
 
 
 class VectorizationItem(BaseModel):
@@ -144,6 +181,7 @@ class VectorizationResponse(BaseModel):
 class PredictDetailedResponse(BaseModel):
     keywords: list[str]
     predicted_labels: list[str] = []
+    predicted_fields: list[PredictedField] = []
     vectorization: VectorizationResponse
 
 
@@ -153,7 +191,11 @@ app = FastAPI(title="AI Keyword Prediction Service", version="1.0.0")
 @app.post("/predict-keywords", response_model=PredictResponse)
 def predict(payload: PredictRequest) -> PredictResponse:
     result = predict_with_vectorization(payload.text, top_k=payload.top_k)
-    return PredictResponse(keywords=result["keywords"])
+    return PredictResponse(
+        keywords=result["keywords"],
+        predicted_labels=result["predicted_labels"],
+        predicted_fields=result["predicted_fields"],
+    )
 
 
 @app.post("/predict-keywords-detailed", response_model=PredictDetailedResponse)
