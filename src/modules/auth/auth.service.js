@@ -6,6 +6,7 @@ const { sendVerificationEmail } = require('./email.service');
 
 const SALT_ROUNDS = 12;
 const VERIFICATION_EXPIRY_HOURS = 24;
+const EMAIL_SEND_COOLDOWN_MS = 60 * 1000;
 
 function getVerificationEmailErrorMessage(err) {
   if (err && err.code === 'SMTP_CONFIG_MISSING') {
@@ -35,12 +36,30 @@ async function createVerificationToken(userId) {
   return token;
 }
 
+async function getLatestTokenCreatedAt(table, userId) {
+  const { rows } = await db.query(
+    `SELECT created_at FROM ${table} WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`,
+    [userId],
+  );
+  return rows[0]?.created_at ? new Date(rows[0].created_at) : null;
+}
+
+function isWithinEmailSendCooldown(createdAt) {
+  if (!createdAt) return false;
+  return Date.now() - createdAt.getTime() < EMAIL_SEND_COOLDOWN_MS;
+}
+
 async function registerWithEmail(email, password, fullName) {
   const { rows } = await db.query('SELECT id, email_verified FROM users WHERE email = ? LIMIT 1', [email]);
 
   if (rows.length > 0) {
     const existing = rows[0];
     if (!existing.email_verified) {
+      const lastSentAt = await getLatestTokenCreatedAt('email_verification_tokens', existing.id);
+      if (isWithinEmailSendCooldown(lastSentAt)) {
+        return { pending: true, message: 'We sent another verification email. Check your inbox.' };
+      }
+
       const token = await createVerificationToken(existing.id);
       try {
         await sendVerificationEmail(email, token);
@@ -128,6 +147,11 @@ async function resendVerification(email) {
 
   if (rows[0].email_verified) {
     return { error: 'This email is already verified. Please log in.' };
+  }
+
+  const lastSentAt = await getLatestTokenCreatedAt('email_verification_tokens', rows[0].id);
+  if (isWithinEmailSendCooldown(lastSentAt)) {
+    return { success: true, message: 'We sent a verification email. Check your inbox.' };
   }
 
   const token = await createVerificationToken(rows[0].id);
@@ -249,7 +273,16 @@ async function requestPasswordReset(email) {
     };
   }
 
-  const token = await createPasswordResetToken(rows[0].id);
+  const userId = rows[0].id;
+  const lastSentAt = await getLatestTokenCreatedAt('password_reset_tokens', userId);
+  if (isWithinEmailSendCooldown(lastSentAt)) {
+    return {
+      success: true,
+      message: 'If an account exists for that email, we sent password reset instructions.',
+    };
+  }
+
+  const token = await createPasswordResetToken(userId);
 
   try {
     const { sendPasswordResetEmail } = require('./email.service');
@@ -275,7 +308,7 @@ async function resetPasswordWithToken(token, newPassword) {
   }
 
   const { rows } = await db.query(
-    `SELECT t.id AS token_id, t.user_id, t.expires_at, t.used_at, u.auth_provider
+    `SELECT t.id AS token_id, t.user_id, t.expires_at, t.used_at, u.auth_provider, u.password_hash
      FROM password_reset_tokens t
      JOIN users u ON u.id = t.user_id
      WHERE t.token = ?
@@ -299,6 +332,13 @@ async function resetPasswordWithToken(token, newPassword) {
 
   if (record.auth_provider !== 'email') {
     return { error: 'This account uses Google sign-in.' };
+  }
+
+  if (record.password_hash) {
+    const sameAsOld = await bcrypt.compare(newPassword, record.password_hash);
+    if (sameAsOld) {
+      return { error: 'New password must be different from your current password' };
+    }
   }
 
   const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
@@ -339,6 +379,11 @@ async function changePassword(userId, currentPassword, newPassword) {
   const valid = await bcrypt.compare(currentPassword, user.password_hash);
   if (!valid) {
     return { error: 'Current password is incorrect', status: 401 };
+  }
+
+  const sameAsOld = await bcrypt.compare(newPassword, user.password_hash);
+  if (sameAsOld) {
+    return { error: 'New password must be different from your current password' };
   }
 
   const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
