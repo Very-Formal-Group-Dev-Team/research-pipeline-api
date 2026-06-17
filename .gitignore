@@ -7,3 +7,5 @@ docker/jitsi/docker/
 __pycache__/.env*
 *.swp
 *.bak
+__pycache__/
+*.csv
