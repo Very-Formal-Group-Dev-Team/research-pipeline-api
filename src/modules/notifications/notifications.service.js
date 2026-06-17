@@ -14,6 +14,7 @@ const NOTIFICATION_TYPES = new Set([
   'paper_version_committed',
   'review_requested',
   'review_completed',
+  'project_updated',
 ]);
 
 function parseNotificationMetadata(metadata) {

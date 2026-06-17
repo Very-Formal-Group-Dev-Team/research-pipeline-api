@@ -276,11 +276,35 @@ async function getLatestPaperVersion(projectId) {
   return rows[0] || null;
 }
 
-async function updateProjectKeywords(projectId, keywords) {
+async function updateProjectKeywords(projectId, keywords, updatedByUserId) {
+  const project = await getProjectById(projectId);
+  const previousKeywords = typeof project?.keywords === 'string'
+    ? JSON.parse(project.keywords)
+    : (project?.keywords || []);
+  const nextKeywords = keywords || [];
+
   await db.query(
     'UPDATE projects SET keywords = ?, updated_at = NOW() WHERE id = ?',
-    [JSON.stringify(keywords || []), projectId]
+    [JSON.stringify(nextKeywords), projectId]
   );
+
+  if (
+    updatedByUserId
+    && JSON.stringify(previousKeywords) !== JSON.stringify(nextKeywords)
+  ) {
+    const context = await getProjectUpdateContext(projectId, updatedByUserId);
+    const projectTitle = context?.title || 'your project';
+    const updaterName = context?.updater_name || 'A team member';
+
+    await notifyProjectMembersOfUpdate({
+      projectId,
+      updatedByUserId,
+      changeType: 'keywords',
+      title: 'Project keywords updated',
+      message: `${updaterName} updated keywords for "${projectTitle}".`,
+      audience: 'students',
+    });
+  }
 }
 
 async function getProjectByCode(projectCode) {
@@ -466,6 +490,7 @@ async function respondToJoinRequest(memberId, accept, leaderUserId) {
               pm.project_id,
               pm.user_id,
               pm.role,
+              pm.contributor_role,
               pm.status,
               pm.join_source,
               p.title AS project_title,
@@ -649,6 +674,7 @@ async function respondToInvitation(invitationId, accept, respondedByUserId) {
               pm.project_id,
               pm.user_id,
               pm.role,
+              pm.contributor_role,
               pm.status,
               p.title AS project_title,
               p.created_by,
@@ -833,11 +859,6 @@ async function getProjectInvitations(projectId) {
 }
 
 async function removeProjectMember(projectId, memberId, requestedByUserId) {
-  const canManage = await isAcceptedProjectMember(projectId, requestedByUserId);
-  if (!canManage) {
-    return { error: 'You must be an accepted project member to manage the team', status: 403 };
-  }
-
   const { rows } = await db.query(
     `SELECT id, user_id, role, status, join_source, is_main_adviser
      FROM project_members
@@ -848,6 +869,18 @@ async function removeProjectMember(projectId, memberId, requestedByUserId) {
   const member = rows[0];
   if (!member) {
     return { error: 'Team member not found', status: 404 };
+  }
+
+  if (member.role === 'member' && member.status === 'accepted') {
+    const isAdviser = await isProjectAdviser(projectId, requestedByUserId);
+    if (!isAdviser) {
+      return { error: 'Only advisers can remove student members from the team', status: 403 };
+    }
+  } else {
+    const canManage = await isAcceptedProjectMember(projectId, requestedByUserId);
+    if (!canManage) {
+      return { error: 'You must be an accepted project member to manage the team', status: 403 };
+    }
   }
 
   if (member.role === 'leader') {
@@ -885,10 +918,40 @@ async function removeProjectMember(projectId, memberId, requestedByUserId) {
       }
     }
 
+    let removalContext = null;
+    if (member.status === 'accepted') {
+      const [nameRows] = await conn.execute(
+        `SELECT p.title, remover.full_name AS remover_name, removed.full_name AS removed_name
+         FROM projects p
+         JOIN users remover ON remover.id = ?
+         JOIN users removed ON removed.id = ?
+         WHERE p.id = ?
+         LIMIT 1`,
+        [requestedByUserId, member.user_id, projectId],
+      );
+      removalContext = nameRows[0] || null;
+    }
+
     await conn.execute('DELETE FROM project_members WHERE id = ?', [memberId]);
 
     if (wasMainAdviser && member.status === 'accepted') {
       await promoteNextMainAdviser(conn, projectId);
+    }
+
+    if (member.status === 'accepted' && removalContext) {
+      const removerName = removalContext.remover_name || 'A team member';
+      const removedName = removalContext.removed_name || 'A team member';
+      const projectTitle = removalContext.title || 'your project';
+
+      await notifyProjectMembersOfUpdate({
+        projectId,
+        updatedByUserId: requestedByUserId,
+        changeType: 'team',
+        title: 'Team member removed',
+        message: `${removerName} removed ${removedName} from "${projectTitle}".`,
+        excludeUserIds: [member.user_id],
+        conn,
+      });
     }
 
     await conn.commit();
@@ -1039,6 +1102,80 @@ function formatProjectStageLabel(stage) {
   return PROJECT_STAGE_LABELS[stage] || stage;
 }
 
+async function getProjectUpdateContext(projectId, updatedByUserId, queryRunner = db) {
+  const sql = `SELECT p.title, u.full_name AS updater_name
+     FROM projects p
+     JOIN users u ON u.id = ?
+     WHERE p.id = ?
+     LIMIT 1`;
+  if (typeof queryRunner.execute === 'function') {
+    const [rows] = await queryRunner.execute(sql, [updatedByUserId, projectId]);
+    return rows[0] || null;
+  }
+  const { rows } = await queryRunner.query(sql, [updatedByUserId, projectId]);
+  return rows[0] || null;
+}
+
+function buildAcceptedMemberRecipientSql(audience = 'all') {
+  const roleFilter = audience === 'students'
+    ? " AND role IN ('leader', 'member')"
+    : '';
+  return `SELECT user_id
+     FROM project_members
+     WHERE project_id = ? AND status = 'accepted'${roleFilter}`;
+}
+
+async function notifyProjectMembersOfUpdate({
+  projectId,
+  updatedByUserId,
+  changeType,
+  title,
+  message,
+  extraMetadata = {},
+  excludeUserIds = [],
+  audience = 'all',
+  conn = null,
+}) {
+  const queryRunner = conn || db;
+  const excluded = new Set([updatedByUserId, ...excludeUserIds].filter(Boolean));
+  const recipientSql = buildAcceptedMemberRecipientSql(audience);
+
+  let memberRows;
+  if (conn) {
+    const [rows] = await conn.execute(recipientSql, [projectId]);
+    memberRows = rows;
+  } else {
+    const { rows } = await queryRunner.query(recipientSql, [projectId]);
+    memberRows = rows;
+  }
+
+  const recipients = memberRows
+    .map((row) => row.user_id)
+    .filter((userId) => userId && !excluded.has(userId));
+
+  if (!recipients.length) return;
+
+  const metadata = {
+    projectId,
+    changeType,
+    updatedByUserId,
+    ...extraMetadata,
+  };
+
+  await Promise.all(
+    recipients.map((userId) =>
+      notificationsService.createNotification({
+        userId,
+        type: 'project_updated',
+        title,
+        message,
+        metadata,
+        conn,
+      }),
+    ),
+  );
+}
+
 async function notifyProjectMembersStageUpdated({
   projectId,
   newStage,
@@ -1168,7 +1305,13 @@ function normalizeProjectType(value) {
   return normalized === 'capstone' ? 'capstone' : normalized === 'thesis' ? 'thesis' : null;
 }
 
-async function updateProjectDetails(projectId, details) {
+function normalizeOptionalProjectField(value) {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  return trimmed || null;
+}
+
+async function updateProjectDetails(projectId, details, updatedByUserId) {
   const {
     title,
     projectType,
@@ -1180,12 +1323,14 @@ async function updateProjectDetails(projectId, details) {
     section,
   } = details;
 
-  const { rows: projectRows } = await db.query(
-    'SELECT institution_id FROM projects WHERE id = ? LIMIT 1',
-    [projectId],
-  );
-  const institutionId = projectRows[0]?.institution_id || null;
+  const project = await getProjectById(projectId);
+  if (!project) {
+    throw new Error('Project not found');
+  }
+
+  const institutionId = project.institution_id || null;
   const institutionsService = require('../institutions/institutions.service');
+  const normalizedSection = normalizeOptionalProjectField(section);
 
   let resolvedCourseId = courseId || null;
   let resolvedCourseName = course || null;
@@ -1220,6 +1365,14 @@ async function updateProjectDetails(projectId, details) {
     resolvedProgramId = null;
   }
 
+  const titleChanged = title !== project.title;
+  const metadataChanged =
+    projectType !== project.project_type
+    || paperStandard !== project.paper_standard
+    || (resolvedProgramId || null) !== (project.program_id || null)
+    || (resolvedCourseId || null) !== (project.course_id || null)
+    || normalizedSection !== normalizeOptionalProjectField(project.section);
+
   await db.query(
     `UPDATE projects
      SET title = ?,
@@ -1240,15 +1393,47 @@ async function updateProjectDetails(projectId, details) {
       resolvedProgramId,
       resolvedCourseName,
       resolvedCourseId,
-      section,
+      normalizedSection,
       projectId,
     ],
   );
 
+  if (updatedByUserId && (titleChanged || metadataChanged)) {
+    const context = await getProjectUpdateContext(projectId, updatedByUserId);
+    const projectTitle = context?.title || title || 'your project';
+    const updaterName = context?.updater_name || 'A team member';
+
+    if (titleChanged) {
+      await notifyProjectMembersOfUpdate({
+        projectId,
+        updatedByUserId,
+        changeType: 'title',
+        title: 'Project title updated',
+        message: `${updaterName} renamed the project from "${project.title}" to "${title}".`,
+        extraMetadata: {
+          previousTitle: project.title,
+          newTitle: title,
+        },
+        audience: 'students',
+      });
+    }
+
+    if (metadataChanged) {
+      await notifyProjectMembersOfUpdate({
+        projectId,
+        updatedByUserId,
+        changeType: 'details',
+        title: 'Project details updated',
+        message: `${updaterName} updated project details for "${projectTitle}".`,
+        audience: 'students',
+      });
+    }
+  }
+
   return getProjectById(projectId);
 }
 
-async function updateProjectAbstract(projectId, abstract) {
+async function updateProjectAbstract(projectId, abstract, updatedByUserId) {
   const conn = await db.pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -1256,6 +1441,23 @@ async function updateProjectAbstract(projectId, abstract) {
       'UPDATE projects SET abstract = ?, description = ?, updated_at = NOW() WHERE id = ?',
       [abstract, abstract, projectId],
     );
+
+    if (updatedByUserId) {
+      const context = await getProjectUpdateContext(projectId, updatedByUserId, conn);
+      const projectTitle = context?.title || 'your project';
+      const updaterName = context?.updater_name || 'A team member';
+
+      await notifyProjectMembersOfUpdate({
+        projectId,
+        updatedByUserId,
+        changeType: 'abstract',
+        title: 'Project abstract updated',
+        message: `${updaterName} updated the abstract for "${projectTitle}".`,
+        audience: 'students',
+        conn,
+      });
+    }
+
     await conn.commit();
     return { abstract };
   } catch (err) {

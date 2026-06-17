@@ -1,6 +1,7 @@
 const db = require('../../../config/db');
 const notificationsService = require('../notifications/notifications.service');
 const { isProjectLocked, getProjectById } = require('../projects/projects.service');
+const coordinatorService = require('../coordinator/coordinator.service');
 
 const NOTE_MIN_LENGTH = 20;
 const NOTE_MAX_LENGTH = 500;
@@ -138,7 +139,9 @@ async function notifyAdvisersReviewRequested({
 }
 
 async function getReviewRequestForMember(projectId, userId) {
-  if (!(await isAcceptedProjectMember(projectId, userId))) {
+  const isMember = await isAcceptedProjectMember(projectId, userId);
+  const canView = isMember || (await coordinatorService.coordinatorCanViewProject(userId, projectId));
+  if (!canView) {
     return { error: 'You are not a member of this project', status: 403 };
   }
 

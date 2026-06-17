@@ -15,6 +15,30 @@ function formatScheduleLabel(dateValue) {
   return `${datePart} at ${timePart}`;
 }
 
+function formatAdviserMeetingNotificationMessage({
+  meetingTitle,
+  projectTitle,
+  scheduledLabel,
+  location,
+  action,
+}) {
+  const sessionLabel = meetingTitle ? `"${meetingTitle}"` : 'A meeting';
+  const projectLabel = projectTitle ? ` for "${projectTitle}"` : '';
+  const locationSuffix = location ? ` at ${location}` : '';
+
+  if (action === 'queued') {
+    return `${sessionLabel}${projectLabel} was queued for ${scheduledLabel}${locationSuffix}.`;
+  }
+  if (action === 'rescheduled') {
+    return `${sessionLabel}${projectLabel} was moved to ${scheduledLabel}${locationSuffix}.`;
+  }
+  if (action === 'cancelled') {
+    return `${sessionLabel}${projectLabel} scheduled on ${scheduledLabel}${locationSuffix} was cancelled.`;
+  }
+
+  return `${sessionLabel}${projectLabel} was scheduled on ${scheduledLabel}${locationSuffix}.`;
+}
+
 async function getAcceptedProjectMembersWithTitle(projectId, queryRunner = db) {
   const rows = await queryRows(
     queryRunner,
@@ -691,13 +715,15 @@ async function createDefense(userId, payload) {
     );
 
     const scheduledLabel = formatScheduleLabel(normalizedSchedule.dateValue);
-    const eventTitle = status === 'pending'
-      ? 'Defense request queued'
-      : 'Defense booking created';
+    const eventTitle = status === 'pending' ? 'Meeting queued' : 'Meeting scheduled';
     const eventMessage = appendMeetingLinkToMessage(
-      status === 'pending'
-        ? `"${meeting_title}" for "${project.title}" was queued for ${scheduledLabel}${location ? ` at ${location}` : ''}.`
-        : `"${meeting_title}" for "${project.title}" was booked on ${scheduledLabel}${location ? ` at ${location}` : ''}.`,
+      formatAdviserMeetingNotificationMessage({
+        meetingTitle: meeting_title,
+        projectTitle: project.title,
+        scheduledLabel,
+        location,
+        action: status === 'pending' ? 'queued' : 'scheduled',
+      }),
       jitsi.meeting_url
     );
 
@@ -723,11 +749,23 @@ async function createDefense(userId, payload) {
 
     await notifyInstitutionCoordinators({
       institutionId: project.institution_id,
-      title: status === 'pending' ? 'Defense request awaiting review' : 'Defense booking submitted',
+      title: status === 'pending' ? 'Meeting awaiting slot' : 'Meeting scheduled by adviser',
       message: appendMeetingLinkToMessage(
         status === 'pending'
-          ? `"${meeting_title}" for "${project.title}" is queued and awaiting available slot.`
-          : `"${meeting_title}" for "${project.title}" was submitted for ${scheduledLabel}${location ? ` at ${location}` : ''}.`,
+          ? formatAdviserMeetingNotificationMessage({
+            meetingTitle: meeting_title,
+            projectTitle: project.title,
+            scheduledLabel,
+            location,
+            action: 'queued',
+          })
+          : formatAdviserMeetingNotificationMessage({
+            meetingTitle: meeting_title,
+            projectTitle: project.title,
+            scheduledLabel,
+            location,
+            action: 'scheduled',
+          }),
         jitsi.meeting_url
       ),
       metadata: {
@@ -927,7 +965,10 @@ async function userHasProjectMeetingAccess(userId, projectId) {
      LIMIT 1`,
     [normalizedProjectId, userId]
   );
-  return createdRows.length > 0;
+  if (createdRows.length) return true;
+
+  const coordinatorService = require('../coordinator/coordinator.service');
+  return coordinatorService.coordinatorCanViewProject(userId, normalizedProjectId);
 }
 
 async function getProjectDefenseSchedules(userId) {
@@ -1110,8 +1151,14 @@ async function cancelDefense(userId, defenseId) {
 
   await notifyProjectMembers({
     projectId: defense.project_id,
-    title: 'Defense booking cancelled',
-    message: `A ${defense.defense_type} defense for "${projectTitle}" scheduled on ${scheduleLabel} was cancelled.`,
+    title: 'Meeting cancelled',
+    message: formatAdviserMeetingNotificationMessage({
+      meetingTitle: defense.meeting_title,
+      projectTitle,
+      scheduledLabel: scheduleLabel,
+      location: defense.location,
+      action: 'cancelled',
+    }),
     metadata: {
       defenseId: defense.id,
       projectId: defense.project_id,
@@ -1126,8 +1173,14 @@ async function cancelDefense(userId, defenseId) {
 
   await notifyInstitutionCoordinators({
     institutionId: defense.institution_id,
-    title: 'Defense booking cancelled by adviser',
-    message: `A ${defense.defense_type} defense for "${defense.project_title || projectTitle}" scheduled on ${scheduleLabel} was cancelled.`,
+    title: 'Meeting cancelled by adviser',
+    message: formatAdviserMeetingNotificationMessage({
+      meetingTitle: defense.meeting_title,
+      projectTitle: defense.project_title || projectTitle,
+      scheduledLabel: scheduleLabel,
+      location: defense.location,
+      action: 'cancelled',
+    }),
     metadata: {
       defenseId: defense.id,
       projectId: defense.project_id,
@@ -1480,9 +1533,15 @@ async function rescheduleDefense(userId, defenseId, payload) {
 
     await notifyProjectMembers({
       projectId: defense.project_id,
-      title: 'Defense booking rescheduled',
+      title: 'Meeting rescheduled',
       message: appendMeetingLinkToMessage(
-        `A ${defense.defense_type} defense for "${defense.project_title || 'your project'}" was moved to ${formatScheduleLabel(normalizedSchedule.dateValue)}${defense.location ? ` at ${defense.location}` : ''}.`,
+        formatAdviserMeetingNotificationMessage({
+          meetingTitle: defense.meeting_title,
+          projectTitle: defense.project_title || 'your project',
+          scheduledLabel: formatScheduleLabel(normalizedSchedule.dateValue),
+          location: defense.location,
+          action: 'rescheduled',
+        }),
         defense.meeting_url
       ),
       metadata: {
@@ -1504,8 +1563,14 @@ async function rescheduleDefense(userId, defenseId, payload) {
 
     await notifyInstitutionCoordinators({
       institutionId: defense.institution_id,
-      title: 'Defense booking rescheduled by adviser',
-      message: `A ${defense.defense_type} defense for "${defense.project_title || 'a project'}" was moved to ${formatScheduleLabel(normalizedSchedule.dateValue)}${defense.location ? ` at ${defense.location}` : ''}.`,
+      title: 'Meeting rescheduled by adviser',
+      message: formatAdviserMeetingNotificationMessage({
+        meetingTitle: defense.meeting_title,
+        projectTitle: defense.project_title || 'a project',
+        scheduledLabel: formatScheduleLabel(normalizedSchedule.dateValue),
+        location: defense.location,
+        action: 'rescheduled',
+      }),
       metadata: {
         defenseId,
         projectId: defense.project_id,
@@ -1582,10 +1647,17 @@ async function processAllPendingDefenses() {
         );
 
         const { projectTitle } = await getAcceptedProjectMembersWithTitle(pending.project_id, conn);
+        const scheduledLabel = formatScheduleLabel(normalizedSchedule.dateValue);
         await notifyProjectMembers({
           projectId: pending.project_id,
-          title: 'Queued defense is now scheduled',
-          message: `The queued ${pending.defense_type} defense for "${projectTitle}" is now scheduled for ${formatScheduleLabel(normalizedSchedule.dateValue)}${pending.location ? ` at ${pending.location}` : ''}.`,
+          title: 'Meeting scheduled',
+          message: formatAdviserMeetingNotificationMessage({
+            meetingTitle: pending.meeting_title,
+            projectTitle,
+            scheduledLabel,
+            location: pending.location,
+            action: 'scheduled',
+          }),
           metadata: {
             defenseId: pending.id,
             projectId: pending.project_id,
@@ -1600,8 +1672,14 @@ async function processAllPendingDefenses() {
 
         await notifyInstitutionCoordinators({
           institutionId: pending.institution_id,
-          title: 'Queued defense auto-scheduled',
-          message: `The queued ${pending.defense_type} defense for "${pending.project_title || projectTitle}" is now scheduled for ${formatScheduleLabel(normalizedSchedule.dateValue)}${pending.location ? ` at ${pending.location}` : ''}.`,
+          title: 'Queued meeting auto-scheduled',
+          message: formatAdviserMeetingNotificationMessage({
+            meetingTitle: pending.meeting_title,
+            projectTitle: pending.project_title || projectTitle,
+            scheduledLabel,
+            location: pending.location,
+            action: 'scheduled',
+          }),
           metadata: {
             defenseId: pending.id,
             projectId: pending.project_id,

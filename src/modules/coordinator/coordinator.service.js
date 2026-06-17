@@ -2302,6 +2302,26 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
   }
 }
 
+/** Whether a coordinator may view a project shown in the institution projects list. */
+async function coordinatorCanViewProject(userId, projectId) {
+  const institution = await getInstitutionByCoordinator(userId);
+  if (!institution) return false;
+
+  const { rows } = await db.query(
+    `SELECT p.id
+     FROM projects p
+     INNER JOIN project_members pm
+       ON pm.project_id = p.id
+      AND pm.role = 'adviser'
+      AND pm.status = 'accepted'
+     WHERE p.id = ?
+       AND p.institution_id = ?
+     LIMIT 1`,
+    [projectId, institution.id],
+  );
+  return rows.length > 0;
+}
+
 async function getProjectsByInstitution(institutionId) {
   const { rows } = await db.query(
     `SELECT DISTINCT
@@ -2414,4 +2434,5 @@ module.exports = {
   getProjectsByInstitution,
   getProjectsByAdviserInInstitution,
   getProjectsForCourseInInstitution,
+  coordinatorCanViewProject,
 };
