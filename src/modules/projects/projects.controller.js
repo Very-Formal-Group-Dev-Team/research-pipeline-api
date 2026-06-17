@@ -3,10 +3,17 @@ const fs = require('fs');
 const mammoth = require('mammoth');
 const projectsService = require('./projects.service');
 const defensesService = require('../defenses/defenses.service');
+const coordinatorService = require('../coordinator/coordinator.service');
 const { getRoleByUserId } = require('../users/users.service');
 const { uploadBase } = require('../../../config/env');
 
 const FILES_DIR = path.join(uploadBase, 'files');
+
+async function userCanViewProject(userId, projectId) {
+  const isMember = await projectsService.isAcceptedProjectMember(projectId, userId);
+  if (isMember) return true;
+  return coordinatorService.coordinatorCanViewProject(userId, projectId);
+}
 
 function resolvePaperFilePath(fileUrl) {
   const filename = path.basename(fileUrl || '');
@@ -276,8 +283,8 @@ async function listAdvised(req, res) {
 async function getOne(req, res) {
   try {
     const projectId = req.params.id;
-    const isMember = await projectsService.isAcceptedProjectMember(projectId, req.user.id);
-    if (!isMember) {
+    const canView = await userCanViewProject(req.user.id, projectId);
+    if (!canView) {
       return res.status(403).json({ error: 'You are not a member of this project' });
     }
 
@@ -318,8 +325,8 @@ async function getByCode(req, res) {
 async function getMembers(req, res) {
   try {
     const projectId = req.params.id;
-    const isMember = await projectsService.isAcceptedProjectMember(projectId, req.user.id);
-    if (!isMember) {
+    const canView = await userCanViewProject(req.user.id, projectId);
+    if (!canView) {
       return res.status(403).json({ error: 'You are not a member of this project' });
     }
 
@@ -495,8 +502,8 @@ async function respondInvitation(req, res) {
 async function getInvitations(req, res) {
   try {
     const projectId = req.params.id;
-    const isMember = await projectsService.isAcceptedProjectMember(projectId, req.user.id);
-    if (!isMember) {
+    const canView = await userCanViewProject(req.user.id, projectId);
+    if (!canView) {
       return res.status(403).json({ error: 'You are not a member of this project' });
     }
 
@@ -682,7 +689,7 @@ async function updateKeywords(req, res) {
     }
 
     const uniqueKeywords = Array.from(new Set(keywords)).slice(0, 30);
-    await projectsService.updateProjectKeywords(projectId, uniqueKeywords);
+    await projectsService.updateProjectKeywords(projectId, uniqueKeywords, req.user.id);
 
     return res.json({ success: true, keywords: uniqueKeywords });
   } catch (err) {
@@ -746,7 +753,7 @@ async function updateDetails(req, res) {
       course,
       courseId,
       section,
-    });
+    }, req.user.id);
 
     updated.keywords = typeof updated.keywords === 'string'
       ? JSON.parse(updated.keywords)
@@ -782,7 +789,7 @@ async function updateAbstract(req, res) {
       return res.status(400).json({ error: 'Project abstract cannot be empty' });
     }
 
-    const result = await projectsService.updateProjectAbstract(projectId, abstract);
+    const result = await projectsService.updateProjectAbstract(projectId, abstract, req.user.id);
     return res.json({ success: true, abstract: result.abstract });
   } catch (err) {
     console.error('projects.controller – updateAbstract error:', err);
@@ -850,7 +857,7 @@ async function findRelatedStudies(req, res) {
       keywords = getKeywordsFromPaperText(fallbackLabelKeywords, extractedText, 10);
     }
 
-    await projectsService.updateProjectKeywords(projectId, keywords);
+    await projectsService.updateProjectKeywords(projectId, keywords, req.user.id);
 
     const vectorization = modelOutput?.vectorization && typeof modelOutput.vectorization === 'object'
       ? modelOutput.vectorization

@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const mammoth = require('mammoth');
 const Diff = require('diff');
 const paperVersionsService = require('./paper_versions.service');
+const coordinatorService = require('../coordinator/coordinator.service');
 const { editTemplate } = require('./template.editor');
 const { uploadBase } = require('../../../config/env');
 
@@ -15,12 +16,18 @@ function ensureFilesDir() {
   }
 }
 
+async function userCanViewPaperVersions(userId, projectId) {
+  const isMember = await paperVersionsService.isProjectMember(projectId, userId);
+  if (isMember) return true;
+  return coordinatorService.coordinatorCanViewProject(userId, projectId);
+}
+
 /** GET /projects/:id/paper-versions */
 async function list(req, res) {
   const projectId = req.params.id;
 
-  const isMember = await paperVersionsService.isProjectMember(projectId, req.user.id);
-  if (!isMember) {
+  const canView = await userCanViewPaperVersions(req.user.id, projectId);
+  if (!canView) {
     return res.status(403).json({ error: 'You are not a member of this project' });
   }
 
@@ -125,8 +132,8 @@ async function generate(req, res) {
 async function download(req, res) {
   const { id: projectId, versionId } = req.params;
 
-  const isMember = await paperVersionsService.isProjectMember(projectId, req.user.id);
-  if (!isMember) {
+  const canView = await userCanViewPaperVersions(req.user.id, projectId);
+  if (!canView) {
     return res.status(403).json({ error: 'You are not a member of this project' });
   }
 
@@ -230,8 +237,8 @@ function countWords(text) {
 async function diff(req, res) {
   const { id: projectId, versionId } = req.params;
 
-  const isMember = await paperVersionsService.isProjectMember(projectId, req.user.id);
-  if (!isMember) {
+  const canView = await userCanViewPaperVersions(req.user.id, projectId);
+  if (!canView) {
     return res.status(403).json({ error: 'You are not a member of this project' });
   }
 
