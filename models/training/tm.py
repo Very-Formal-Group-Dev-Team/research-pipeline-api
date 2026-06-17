@@ -17,14 +17,12 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.preprocessing import MultiLabelBinarizer
 
-
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
-DATASET_PATH = BASE_DIR / "archivum-dataset.csv"
-OUTPUT_DIR = REPO_ROOT / "Backend" / "models" / "keyword_model"
+DATASET_PATH = BASE_DIR / "archivum-data.csv"
+OUTPUT_DIR = REPO_ROOT / ".." / "keyword_model" 
 MODEL_PATH = OUTPUT_DIR / "model.pkl"
 VECTORIZER_PATH = OUTPUT_DIR / "vectorizer.pkl"
-
 
 def _ensure_nltk_resources() -> None:
 	resources = [
@@ -43,11 +41,9 @@ def _ensure_nltk_resources() -> None:
 			nltk.download(name, quiet=True)
 			nltk.data.find(resource_path)
 
-
 _ensure_nltk_resources()
 STOP_WORDS = set(stopwords.words("english"))
 PUNCT_TABLE = str.maketrans("", "", string.punctuation)
-
 
 def clean_text(text: str) -> str:
 	text = (text or "").lower()
@@ -57,7 +53,6 @@ def clean_text(text: str) -> str:
 	tokens = word_tokenize(text)
 	filtered = [token for token in tokens if token not in STOP_WORDS and token.isalpha()]
 	return " ".join(filtered)
-
 
 def load_training_data(dataset_path: Path) -> tuple[list[str], list[list[str]]]:
 	texts: list[str] = []

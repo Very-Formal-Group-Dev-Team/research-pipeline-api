@@ -5,6 +5,7 @@ const projectsService = require('./projects.service');
 const defensesService = require('../defenses/defenses.service');
 const { getRoleByUserId } = require('../users/users.service');
 const { uploadBase } = require('../../../config/env');
+const { getCategoryFullName } = require('../../config/arxiv_categories');
 
 const FILES_DIR = path.join(uploadBase, 'files');
 
@@ -841,6 +842,20 @@ async function findRelatedStudies(req, res) {
     const fallbackLabelKeywords = Array.isArray(modelOutput?.predicted_labels)
       ? modelOutput.predicted_labels
       : [];
+    const predictedLabels = Array.isArray(modelOutput?.predicted_labels)
+      ? modelOutput.predicted_labels
+      : [];
+    const predictedFields = Array.isArray(modelOutput?.predicted_fields)
+      ? modelOutput.predicted_fields
+      : [];
+    const predictedFieldsFull = (Array.isArray(predictedFields) ? predictedFields : []).map((f) => {
+      // f may be a string or an object { label, confidence }
+      const labelCode = typeof f === 'string' ? f : (f && (f.label || ''));
+      const confidence = f && typeof f === 'object' && typeof f.confidence === 'number'
+        ? f.confidence
+        : Number(f && f.confidence) || 0;
+      return { label: getCategoryFullName(labelCode), confidence };
+    });
 
     let keywords = getKeywordsFromPaperText(modelKeywords, extractedText, 10);
     if (!keywords.length) {
@@ -866,6 +881,8 @@ async function findRelatedStudies(req, res) {
       },
       keyword_model_url: keywordModelResponse.baseUrl,
       keywords,
+      predicted_labels: predictedLabels,
+      predicted_fields: predictedFieldsFull,
       vectorization,
     });
   } catch (err) {
@@ -1083,6 +1100,91 @@ function resolveCrossRefToYear(value) {
   return parseCrossRefYear(raw);
 }
 
+function parseCrossRefConfidenceThreshold(value) {
+  if (value === undefined || value === null || value === '') return 0.5;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0.5;
+  return Math.min(1, Math.max(0, parsed));
+}
+
+function parseCrossRefPredictedLabels(value) {
+  if (!value) return [];
+  const parts = String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return Array.from(new Set(parts));
+}
+
+function parseCrossRefPredictedFields(value) {
+  if (!value) return [];
+  return String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [codeRaw, confidenceRaw] = entry.split(':');
+      const code = String(codeRaw || '').trim();
+      const confidence = Number(confidenceRaw);
+      return {
+        code,
+        confidence: Number.isFinite(confidence) ? confidence : 0,
+      };
+    })
+    .filter((field) => field.code);
+}
+
+function normalizeTextForMatch(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function scoreStudyWithPredictedLabels(study, scopedFieldTokens, confidenceBoost) {
+  if (!Array.isArray(scopedFieldTokens) || !scopedFieldTokens.length) {
+    return 0;
+  }
+
+  const title = normalizeTextForMatch(study?.display_name);
+  const authors = Array.isArray(study?.authorships)
+    ? study.authorships.map((a) => normalizeTextForMatch(a?.author?.display_name)).join(' ')
+    : '';
+  const venue = normalizeTextForMatch(study?.primary_location?.source?.display_name);
+  const haystack = `${title} ${authors} ${venue}`;
+
+  return scopedFieldTokens.reduce((score, token) => {
+    if (!token) return score;
+    if (haystack.includes(token)) {
+      return score + confidenceBoost;
+    }
+    return score;
+  }, 0);
+}
+
+function rankStudiesByPredictedFields(studies, scopedFields) {
+  if (!Array.isArray(studies) || !studies.length) return [];
+  if (!Array.isArray(scopedFields) || !scopedFields.length) return studies;
+
+  return [...studies]
+    .map((study, index) => {
+      const boost = scopedFields.reduce((acc, field) => {
+        const confidence = typeof field.confidence === 'number' ? field.confidence : Number(field.confidence) || 0;
+        const code = normalizeTextForMatch(field.code);
+        const label = normalizeTextForMatch(field.label);
+        const labelParts = label.split(' — ').map((part) => part.trim()).filter(Boolean);
+        const tokens = [code, label, ...labelParts].filter(Boolean);
+        return acc + scoreStudyWithPredictedLabels(study, tokens, confidence);
+      }, 0);
+      return { study, boost, index };
+    })
+    .sort((a, b) => {
+      if (b.boost !== a.boost) return b.boost - a.boost;
+      return a.index - b.index;
+    })
+    .map((item) => item.study);
+}
+
 function buildOpenAlexCrossRefFilters(fromYear, toYear) {
   const filters = [];
   if (fromYear) filters.push(`publication_year:>${fromYear - 1}`);
@@ -1219,6 +1321,27 @@ async function crossReferenceStudies(req, res) {
     const sort = parseCrossRefSort(req.query.sort);
     const fromYear = parseCrossRefYear(req.query.fromYear);
     const toYear = resolveCrossRefToYear(req.query.toYear);
+    const confidenceThreshold = parseCrossRefConfidenceThreshold(req.query.confidenceThreshold);
+    const predictedFieldsRaw = parseCrossRefPredictedFields(req.query.predictedFields);
+    const predictedLabels = parseCrossRefPredictedLabels(req.query.predictedLabels);
+
+    const scopedFieldsFromPayload = predictedFieldsRaw
+      .filter((field) => field.confidence >= confidenceThreshold)
+      .map((field) => ({
+        code: field.code,
+        label: getCategoryFullName(field.code),
+        confidence: field.confidence,
+      }));
+
+    const scopedFieldsFromLabels = predictedLabels
+      .filter((code) => !scopedFieldsFromPayload.some((field) => field.code === code))
+      .map((code) => ({
+        code,
+        label: getCategoryFullName(code),
+        confidence: confidenceThreshold,
+      }));
+
+    const scopedFields = [...scopedFieldsFromPayload, ...scopedFieldsFromLabels];
 
     const searchTerm = sanitizedKeywords.join(' ');
     const openAlexUrl = buildOpenAlexCrossRefUrl({
@@ -1237,6 +1360,7 @@ async function crossReferenceStudies(req, res) {
 
     const payload = openAlexResult.payload;
     const studies = Array.isArray(payload?.results) ? payload.results : [];
+    const rankedStudies = rankStudiesByPredictedFields(studies, scopedFields);
     const total = typeof payload?.meta?.count === 'number' ? payload.meta.count : studies.length;
     const hasMore = page * perPage < total;
 
@@ -1246,7 +1370,8 @@ async function crossReferenceStudies(req, res) {
       page,
       perPage,
       hasMore,
-      studies,
+      studies: rankedStudies,
+      scopedFields,
     });
   } catch (err) {
     console.error('projects.controller – crossReferenceStudies error:', err);
