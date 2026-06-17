@@ -1,5 +1,6 @@
 const express = require('express');
 const { requireAuth } = require('../../middleware/auth');
+const { authEmailRateLimit } = require('../../middleware/rateLimit');
 const {
   register,
   login,
@@ -26,10 +27,10 @@ router.post('/register', asyncHandler(register));
 router.post('/login', asyncHandler(login));
 router.post('/logout', asyncHandler(logout));
 router.post('/verify-email', asyncHandler(verifyEmail));
-router.post('/resend-verification', asyncHandler(resendVerification));
+router.post('/resend-verification', authEmailRateLimit, asyncHandler(resendVerification));
 router.get('/me', requireAuth, asyncHandler(getMe));
 router.post('/change-password', requireAuth, asyncHandler(changePassword));
-router.post('/forgot-password', asyncHandler(forgotPassword));
+router.post('/forgot-password', authEmailRateLimit, asyncHandler(forgotPassword));
 router.post('/reset-password', asyncHandler(resetPassword));
 router.post('/oauth', asyncHandler(oAuthRedirect));
 router.get('/google/callback', asyncHandler(googleCallback));
