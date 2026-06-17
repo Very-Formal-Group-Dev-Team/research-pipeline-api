@@ -857,8 +857,6 @@ async function findRelatedStudies(req, res) {
       keywords = getKeywordsFromPaperText(fallbackLabelKeywords, extractedText, 10);
     }
 
-    await projectsService.updateProjectKeywords(projectId, keywords, req.user.id);
-
     const vectorization = modelOutput?.vectorization && typeof modelOutput.vectorization === 'object'
       ? modelOutput.vectorization
       : { message: 'Vectorization detail unavailable from keyword model endpoint' };
