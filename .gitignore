@@ -9,3 +9,4 @@ __pycache__/.env*
 *.bak
 __pycache__/
 *.csv
+model-confidence-report/
