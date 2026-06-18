@@ -16,10 +16,11 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.preprocessing import MultiLabelBinarizer
+from tqdm import tqdm
 
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
-DATASET_PATH = BASE_DIR / "archivum-data.csv"
+DATASET_PATH = BASE_DIR / "archivum-dataset.csv"
 OUTPUT_DIR = REPO_ROOT / ".." / "keyword_model" 
 MODEL_PATH = OUTPUT_DIR / "model.pkl"
 VECTORIZER_PATH = OUTPUT_DIR / "vectorizer.pkl"
@@ -57,26 +58,55 @@ def clean_text(text: str) -> str:
 def load_training_data(dataset_path: Path) -> tuple[list[str], list[list[str]]]:
 	texts: list[str] = []
 	labels: list[list[str]] = []
+	skipped_no_categories = 0
+	skipped_no_text = 0
+
+	with dataset_path.open("r", encoding="utf-8", newline="") as handle:
+		total_rows = max(sum(1 for _ in handle) - 1, 0)
 
 	with dataset_path.open("r", encoding="utf-8", newline="") as handle:
 		reader = csv.DictReader(handle)
-		for row in reader:
-			title = (row.get("title") or "").strip()
-			abstract = (row.get("abstract") or "").strip()
-			categories = [item for item in (row.get("categories") or "").split() if item]
+		fieldnames = [name.strip() for name in (reader.fieldnames or []) if isinstance(name, str)]
+		normalized_map = {name.lower(): name for name in fieldnames}
+		title_column = normalized_map.get("title")
+		abstract_column = normalized_map.get("abstract")
+		categories_column = normalized_map.get("categories")
+
+		missing_columns = []
+		if title_column is None:
+			missing_columns.append("title")
+		if abstract_column is None:
+			missing_columns.append("abstract")
+		if categories_column is None:
+			missing_columns.append("categories")
+		if missing_columns:
+			raise ValueError(
+				f"Dataset {dataset_path} is missing required columns: {', '.join(missing_columns)}. "
+				"Training requires title, abstract, and categories columns."
+			)
+
+		for row in tqdm(reader, total=total_rows, desc="Loading training rows", unit="row"):
+			title = (row.get(title_column) or "").strip()
+			abstract = (row.get(abstract_column) or "").strip()
+			categories = [item for item in (row.get(categories_column) or "").split() if item]
 
 			if not categories:
+				skipped_no_categories += 1
 				continue
 
 			text = " ".join(part for part in [title, abstract] if part).strip()
 			if not text:
+				skipped_no_text += 1
 				continue
 
 			texts.append(clean_text(text))
 			labels.append(categories)
 
 	if not texts:
-		raise ValueError(f"No training rows were found in {dataset_path}")
+		raise ValueError(
+			f"No usable training rows were found in {dataset_path}. "
+			f"skipped_no_categories={skipped_no_categories}, skipped_no_text={skipped_no_text}."
+		)
 
 	return texts, labels
 

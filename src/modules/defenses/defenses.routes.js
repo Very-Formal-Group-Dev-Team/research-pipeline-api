@@ -8,6 +8,7 @@ const {
   getProjectMeetings,
   getMeetingById,
   getDefenseMeetingSessionHandler,
+  getDefenseMeetingGradesHandler,
   putDefensePanelEvaluations,
   getTranscriptionHandler,
   getTranscriptionDownloadHandler,
@@ -51,6 +52,7 @@ router.get('/me', asyncHandler(getMyDefenses));
 router.get('/my-projects', asyncHandler(getMyProjectDefenses));
 router.get('/project/:projectId', asyncHandler(getProjectMeetings));
 router.get('/:id/meeting-session', asyncHandler(getDefenseMeetingSessionHandler));
+router.get('/:id/meeting-grades', asyncHandler(getDefenseMeetingGradesHandler));
 router.put('/:id/panel-evaluations', asyncHandler(putDefensePanelEvaluations));
 router.get('/:id/transcription/download', asyncHandler(getTranscriptionDownloadHandler));
 router.get('/:id/transcription', asyncHandler(getTranscriptionHandler));

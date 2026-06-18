@@ -1818,6 +1818,286 @@ async function getDefenseRubric(rubricId) {
   return { ...rows[0], criteria };
 }
 
+function computeWeightedTotalScore(normalizedScores, criteria) {
+  if (!normalizedScores.length || !criteria?.length) return null;
+
+  const criteriaById = new Map(criteria.map((c) => [c.id, c]));
+  let weightedSum = 0;
+  let totalWeight = 0;
+
+  for (const row of normalizedScores) {
+    const criterion = criteriaById.get(row.criterionId);
+    if (!criterion) continue;
+    const weight = Number(criterion.weight) || 0;
+    const maxScore = Number(criterion.max_score) || 5;
+    if (weight <= 0 || maxScore <= 0) continue;
+    weightedSum += (row.score / maxScore) * weight;
+    totalWeight += weight;
+  }
+
+  if (!totalWeight) return null;
+  return Math.round((weightedSum / totalWeight) * 10000) / 100;
+}
+
+async function getMeetingSiblingDefenses(defenseId) {
+  const { rows } = await db.query(
+    `SELECT d.id, d.project_id, d.rubric_id, d.defense_type, d.scheduled_at, d.end_time,
+            d.location, d.venue, d.modality, d.status,
+            p.title AS project_title, p.project_code, p.institution_id
+     FROM defenses d
+     INNER JOIN projects p ON p.id = d.project_id
+     INNER JOIN defenses anchor ON anchor.id = ?
+     INNER JOIN projects anchor_project ON anchor_project.id = anchor.project_id
+     WHERE d.id = anchor.id
+        OR (
+          d.defense_type = anchor.defense_type
+          AND COALESCE(d.modality, 'Online') = COALESCE(anchor.modality, 'Online')
+          AND TRIM(COALESCE(d.venue, d.location, '')) = TRIM(COALESCE(anchor.venue, anchor.location, ''))
+          AND d.scheduled_at = anchor.scheduled_at
+          AND COALESCE(d.end_time, d.scheduled_at) = COALESCE(anchor.end_time, anchor.scheduled_at)
+          AND p.institution_id = anchor_project.institution_id
+          AND d.status NOT IN ('cancelled', 'rejected')
+        )
+     ORDER BY p.title ASC, p.project_code ASC`,
+    [defenseId]
+  );
+
+  return rows;
+}
+
+async function loadPanelistEvaluationState(userId, defenseId, rubric) {
+  const [{ rows: evalRows }, { rows: noteRows }] = await Promise.all([
+    db.query(
+      `SELECT criterion_id, score, comments
+       FROM evaluations
+       WHERE defense_id = ? AND panelist_id = ?`,
+      [defenseId, userId]
+    ),
+    db.query(
+      `SELECT notes FROM defense_panelist_notes
+       WHERE defense_id = ? AND panelist_id = ?
+       LIMIT 1`,
+      [defenseId, userId]
+    ),
+  ]);
+
+  const evaluations = evalRows.map((row) => ({
+    criterion_id: row.criterion_id,
+    score: Number(row.score),
+    comments: row.comments || '',
+  }));
+
+  const notes = noteRows[0]?.notes || '';
+  const normalizedScores = evaluations.map((row) => ({
+    criterionId: row.criterion_id,
+    score: row.score,
+    comments: row.comments,
+  }));
+  const total_score = computeWeightedTotalScore(normalizedScores, rubric?.criteria || []);
+
+  return { evaluations, notes, total_score };
+}
+
+async function recalculateDefenseOverallScore(conn, defenseId, projectId, rubric) {
+  if (!rubric?.criteria?.length) return;
+
+  const [evalRows] = await conn.execute(
+    `SELECT panelist_id, criterion_id, score
+     FROM evaluations
+     WHERE defense_id = ?`,
+    [defenseId]
+  );
+
+  if (!evalRows.length) {
+    await conn.execute('DELETE FROM defense_results WHERE defense_id = ?', [defenseId]);
+    return;
+  }
+
+  const criteriaById = new Map(rubric.criteria.map((c) => [c.id, c]));
+  const byPanelist = new Map();
+
+  for (const row of evalRows) {
+    if (!byPanelist.has(row.panelist_id)) {
+      byPanelist.set(row.panelist_id, []);
+    }
+    byPanelist.get(row.panelist_id).push({
+      criterionId: row.criterion_id,
+      score: Number(row.score),
+    });
+  }
+
+  const panelTotals = [];
+  for (const scores of byPanelist.values()) {
+    const total = computeWeightedTotalScore(scores, rubric.criteria);
+    if (total != null) panelTotals.push(total);
+  }
+
+  if (!panelTotals.length) return;
+
+  const overallScore = Math.round(
+    (panelTotals.reduce((sum, value) => sum + value, 0) / panelTotals.length) * 100
+  ) / 100;
+
+  const [existingRows] = await conn.execute(
+    'SELECT id FROM defense_results WHERE defense_id = ? LIMIT 1',
+    [defenseId]
+  );
+
+  if (existingRows.length) {
+    await conn.execute(
+      `UPDATE defense_results
+       SET overall_score = ?, project_id = ?
+       WHERE id = ?`,
+      [overallScore, projectId, existingRows[0].id]
+    );
+    return;
+  }
+
+  const [idRows] = await conn.execute('SELECT UUID() AS id');
+  await conn.execute(
+    `INSERT INTO defense_results (id, defense_id, project_id, overall_score)
+     VALUES (?, ?, ?, ?)`,
+    [idRows[0].id, defenseId, projectId, overallScore]
+  );
+}
+
+async function buildMeetingGradesPayload(defenseId) {
+  const siblings = await getMeetingSiblingDefenses(defenseId);
+  if (!siblings.length) {
+    return { rubric: null, projects: [] };
+  }
+
+  const rubric = await getDefenseRubric(siblings[0].rubric_id);
+  const siblingIds = siblings.map((row) => row.id);
+
+  const [{ rows: evalRows }, { rows: noteRows }, { rows: resultRows }, { rows: panelistRows }] =
+    await Promise.all([
+      db.query(
+        `SELECT e.defense_id, e.panelist_id, e.criterion_id, e.score, e.comments,
+                u.full_name AS panelist_name
+         FROM evaluations e
+         INNER JOIN users u ON u.id = e.panelist_id
+         WHERE e.defense_id IN (${siblingIds.map(() => '?').join(', ')})`,
+        siblingIds
+      ),
+      db.query(
+        `SELECT n.defense_id, n.panelist_id, n.notes, u.full_name AS panelist_name
+         FROM defense_panelist_notes n
+         INNER JOIN users u ON u.id = n.panelist_id
+         WHERE n.defense_id IN (${siblingIds.map(() => '?').join(', ')})`,
+        siblingIds
+      ),
+      db.query(
+        `SELECT defense_id, overall_score, verdict, recommendations, finalized_at
+         FROM defense_results
+         WHERE defense_id IN (${siblingIds.map(() => '?').join(', ')})`,
+        siblingIds
+      ),
+      db.query(
+        `SELECT dp.defense_id, dp.user_id, u.full_name AS panelist_name
+         FROM defense_panelists dp
+         INNER JOIN users u ON u.id = dp.user_id
+         WHERE dp.defense_id IN (${siblingIds.map(() => '?').join(', ')})`,
+        siblingIds
+      ),
+    ]);
+
+  const criteriaById = new Map((rubric?.criteria || []).map((c) => [c.id, c]));
+  const resultsByDefense = new Map(resultRows.map((row) => [row.defense_id, row]));
+
+  const projects = siblings.map((sibling) => {
+    const defenseEvals = evalRows.filter((row) => row.defense_id === sibling.id);
+    const defenseNotes = noteRows.filter((row) => row.defense_id === sibling.id);
+    const defensePanelists = panelistRows.filter((row) => row.defense_id === sibling.id);
+    const result = resultsByDefense.get(sibling.id);
+
+    const panelistIds = new Set([
+      ...defensePanelists.map((row) => row.user_id),
+      ...defenseEvals.map((row) => row.panelist_id),
+      ...defenseNotes.map((row) => row.panelist_id),
+    ]);
+
+    const panelists = Array.from(panelistIds).map((panelistId) => {
+      const panelistName =
+        defensePanelists.find((row) => row.user_id === panelistId)?.panelist_name
+        || defenseEvals.find((row) => row.panelist_id === panelistId)?.panelist_name
+        || defenseNotes.find((row) => row.panelist_id === panelistId)?.panelist_name
+        || 'Panelist';
+
+      const scores = defenseEvals
+        .filter((row) => row.panelist_id === panelistId)
+        .map((row) => ({
+          criterion_id: row.criterion_id,
+          criterion_name: criteriaById.get(row.criterion_id)?.criterion_name || 'Criterion',
+          max_score: Number(criteriaById.get(row.criterion_id)?.max_score) || 5,
+          score: Number(row.score),
+          comments: row.comments || '',
+        }));
+
+      const normalizedScores = scores.map((row) => ({
+        criterionId: row.criterion_id,
+        score: row.score,
+      }));
+
+      return {
+        panelist_id: panelistId,
+        panelist_name: panelistName,
+        scores,
+        notes: defenseNotes.find((row) => row.panelist_id === panelistId)?.notes || '',
+        total_score: computeWeightedTotalScore(normalizedScores, rubric?.criteria || []),
+      };
+    });
+
+    const criterionSummaries = (rubric?.criteria || []).map((criterion) => {
+      const matching = defenseEvals.filter((row) => row.criterion_id === criterion.id);
+      if (!matching.length) {
+        return {
+          criterion_id: criterion.id,
+          criterion_name: criterion.criterion_name,
+          max_score: Number(criterion.max_score) || 5,
+          average_score: null,
+        };
+      }
+
+      const averageScore =
+        matching.reduce((sum, row) => sum + Number(row.score), 0) / matching.length;
+
+      return {
+        criterion_id: criterion.id,
+        criterion_name: criterion.criterion_name,
+        max_score: Number(criterion.max_score) || 5,
+        average_score: Math.round(averageScore * 100) / 100,
+      };
+    });
+
+    return {
+      defense_id: sibling.id,
+      project_id: sibling.project_id,
+      project_title: sibling.project_title,
+      project_code: sibling.project_code,
+      overall_score: result?.overall_score != null ? Number(result.overall_score) : null,
+      verdict: result?.verdict || null,
+      recommendations: result?.recommendations || null,
+      criterion_summaries: criterionSummaries,
+      panelists,
+    };
+  });
+
+  return { rubric, projects };
+}
+
+async function getDefenseMeetingGrades(userId, defenseId) {
+  const access = await assertDefenseMeetingAccess(userId, defenseId);
+  if (access.error) return access;
+
+  if (access.scheduleSource !== 'defense') {
+    return { error: 'Grades are only available for defense meetings', status: 400 };
+  }
+
+  const payload = await buildMeetingGradesPayload(defenseId);
+  return { data: payload };
+}
+
 async function getDefenseMeetingSession(userId, defenseId) {
   const access = await assertDefenseMeetingAccess(userId, defenseId);
   if (access.error) return access;
@@ -1827,30 +2107,24 @@ async function getDefenseMeetingSession(userId, defenseId) {
 
   let evaluations = [];
   let notes = '';
+  let total_score = null;
 
   if (isPanelist && scheduleSource === 'defense') {
-    const [{ rows: evalRows }, { rows: noteRows }] = await Promise.all([
-      db.query(
-        `SELECT criterion_id, score, comments
-         FROM evaluations
-         WHERE defense_id = ? AND panelist_id = ?`,
-        [defenseId, userId]
-      ),
-      db.query(
-        `SELECT notes FROM defense_panelist_notes
-         WHERE defense_id = ? AND panelist_id = ?
-         LIMIT 1`,
-        [defenseId, userId]
-      ),
-    ]);
-
-    evaluations = evalRows.map((row) => ({
-      criterion_id: row.criterion_id,
-      score: Number(row.score),
-      comments: row.comments || '',
-    }));
-    notes = noteRows[0]?.notes || '';
+    const state = await loadPanelistEvaluationState(userId, defenseId, rubric);
+    evaluations = state.evaluations;
+    notes = state.notes;
+    total_score = state.total_score;
   }
+
+  const meeting_projects =
+    scheduleSource === 'defense'
+      ? (await getMeetingSiblingDefenses(defenseId)).map((row) => ({
+        defense_id: row.id,
+        project_id: row.project_id,
+        project_title: row.project_title,
+        project_code: row.project_code,
+      }))
+      : [];
 
   return {
     data: {
@@ -1873,6 +2147,8 @@ async function getDefenseMeetingSession(userId, defenseId) {
       rubric,
       evaluations,
       notes,
+      total_score,
+      meeting_projects,
     },
   };
 }
@@ -1985,6 +2261,10 @@ async function saveDefensePanelEvaluations(userId, defenseId, payload) {
       );
     }
 
+    if (rubric) {
+      await recalculateDefenseOverallScore(conn, defenseId, defense.project_id, rubric);
+    }
+
     await conn.commit();
     return getDefenseMeetingSession(userId, defenseId);
   } catch (err) {
@@ -2014,5 +2294,6 @@ module.exports = {
   getScheduleWindow,
   getDefenseMeetingSession,
   saveDefensePanelEvaluations,
+  getDefenseMeetingGrades,
   assertDefenseMeetingAccess,
 };

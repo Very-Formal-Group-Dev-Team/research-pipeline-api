@@ -31,8 +31,12 @@ async function withdrawReviewRequest(req, res) {
 
 async function completeReviewRequest(req, res) {
   const projectId = req.params.id;
-  const result = await paperReviewsService.completeReviewRequest(projectId, req.user.id);
+  const force = Boolean(req.body?.force);
+  const result = await paperReviewsService.completeReviewRequest(projectId, req.user.id, { force });
   if (result.error) {
+    if (result.status === 409 && result.data) {
+      return res.status(409).json(result.data);
+    }
     return res.status(result.status || 400).json({ error: result.error });
   }
   return res.json(result.data);

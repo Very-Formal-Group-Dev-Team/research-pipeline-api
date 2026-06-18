@@ -13,6 +13,7 @@ const {
   restoreMeeting,
   getDefenseMeetingSession,
   saveDefensePanelEvaluations,
+  getDefenseMeetingGrades,
 } = require('./defenses.service');
 const {
   getTranscriptionHandler,
@@ -184,6 +185,19 @@ async function getDefenseMeetingSessionHandler(req, res) {
   }
 }
 
+async function getDefenseMeetingGradesHandler(req, res) {
+  try {
+    const result = await getDefenseMeetingGrades(req.user.id, req.params.id);
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    return res.json(result.data);
+  } catch (err) {
+    console.error('defenses.controller – getDefenseMeetingGrades error:', err);
+    return res.status(500).json({ error: 'Failed to load defense meeting grades' });
+  }
+}
+
 async function putDefensePanelEvaluations(req, res) {
   try {
     const result = await saveDefensePanelEvaluations(req.user.id, req.params.id, req.body || {});
@@ -221,6 +235,7 @@ module.exports = {
   getProjectMeetings,
   getMeetingById,
   getDefenseMeetingSessionHandler,
+  getDefenseMeetingGradesHandler,
   putDefensePanelEvaluations,
   getTranscriptionHandler,
   getTranscriptionDownloadHandler,

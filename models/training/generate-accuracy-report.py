@@ -1,31 +1,41 @@
 from __future__ import annotations
 
 import argparse
-import csv
-import json
 import re
 import string
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import joblib
-import matplotlib
 import nltk
 import numpy as np
+import pandas as pd
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
-from sklearn.metrics import precision_recall_fscore_support
-
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
+from sklearn.metrics import accuracy_score, classification_report, hamming_loss
+from sklearn.preprocessing import MultiLabelBinarizer
+from tqdm import tqdm
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_DATASET_PATH = BASE_DIR / "archivum-data-testing.csv"
-DEFAULT_MODEL_DIR = BASE_DIR.parent / "Backend" / "models" / "keyword_model"
-DEFAULT_OUTPUT_DIR = BASE_DIR / "model-confidence-report"
+DEFAULT_MODEL_PATH = BASE_DIR.parent / "keyword_model" / "model.pkl"
+DEFAULT_VECTORIZER_PATH = BASE_DIR.parent / "keyword_model" / "vectorizer.pkl"
+
+TESTING_CSV_CANDIDATES = [
+	"archivum-dataset-testing.csv",
+	"archivum-data-testing.csv",
+]
+
+CHECKING_CSV_CANDIDATES = [
+	"archivum-dataset-checking.csv",
+	"archivum-data-checking.csv",
+]
+
+DEFAULT_RESULT_PATH = BASE_DIR / "archivum-dataset-result.csv"
+
+# Keep this limit aligned with the training subset size.
+TRAINING_DATA_LIMIT = 100_000
+PREDICTION_THRESHOLD = 0.5
 
 
 def _ensure_nltk_resources() -> None:
@@ -60,364 +70,370 @@ def clean_text(text: str) -> str:
 	return " ".join(filtered)
 
 
+def parse_categories(value: Any) -> list[str]:
+	if value is None or (isinstance(value, float) and np.isnan(value)):
+		return []
+	return [token for token in str(value).split() if token]
+
+
+def normalize_title(value: Any) -> str:
+	return " ".join(str(value or "").split()).strip().lower()
+
+
+def require_columns(df: pd.DataFrame, columns: Iterable[str], source_name: str) -> None:
+	missing = [column for column in columns if column not in df.columns]
+	if missing:
+		raise ValueError(f"Missing required column(s) in {source_name}: {', '.join(missing)}")
+
+
+def read_csv_with_required_columns(path: Path, required_columns: list[str]) -> pd.DataFrame:
+	try:
+		return pd.read_csv(path, usecols=required_columns, dtype=str, keep_default_na=False)
+	except ValueError as error:
+		raise ValueError(
+			f"Unable to read required columns from {path}: {', '.join(required_columns)}"
+		) from error
+
+
+def resolve_input_file(base_dir: Path, candidates: list[str], explicit_path: Path | None) -> Path:
+	if explicit_path is not None:
+		if explicit_path.exists():
+			return explicit_path
+		raise FileNotFoundError(f"Input file not found: {explicit_path}")
+
+	for candidate in candidates:
+		path = base_dir / candidate
+		if path.exists():
+			return path
+
+	candidate_list = ", ".join(candidates)
+	raise FileNotFoundError(f"No input file found. Tried: {candidate_list}")
+
+
+def build_probability_matrix(model: Any, features: Any) -> np.ndarray:
+	probabilities = model.predict_proba(features)
+	if isinstance(probabilities, list):
+		columns: list[np.ndarray] = []
+		for entry in probabilities:
+			values = np.asarray(entry)
+			if values.ndim == 2 and values.shape[1] >= 2:
+				columns.append(values[:, 1])
+			else:
+				columns.append(values.ravel())
+		return np.column_stack(columns)
+
+	matrix = np.asarray(probabilities)
+	if matrix.ndim == 1:
+		matrix = matrix.reshape(-1, 1)
+	return matrix
+
+
+def get_class_labels(model: Any, probability_width: int) -> list[str]:
+	classes = getattr(model, "classes_", None)
+	if classes is None:
+		raise RuntimeError("Trained model does not expose classes_.")
+
+	labels = [str(item) for item in list(classes)]
+	if len(labels) != probability_width:
+		raise RuntimeError(
+			"Mismatch between class labels and probability output width: "
+			f"{len(labels)} labels vs {probability_width} columns"
+		)
+	return labels
+
+
+def truncate_to_limit(df: pd.DataFrame, row_limit: int | None, source_name: str) -> pd.DataFrame:
+	if row_limit is None or row_limit <= 0:
+		return df
+	if len(df) > row_limit:
+		print(f"[info] {source_name}: truncating from {len(df)} to first {row_limit} rows.")
+		return df.head(row_limit).copy()
+	return df
+
+
+def run_prediction_phase(
+	testing_csv_path: Path,
+	model: Any,
+	vectorizer: Any,
+	threshold: float,
+	row_limit: int | None,
+	result_path: Path,
+) -> tuple[pd.DataFrame, list[set[str]], list[str]]:
+	testing_df = read_csv_with_required_columns(testing_csv_path, ["title", "abstract"])
+	testing_df = truncate_to_limit(testing_df, row_limit, "testing file")
+	require_columns(testing_df, ["title", "abstract"], str(testing_csv_path))
+
+	combined_texts = (
+		testing_df["title"].fillna("").astype(str).str.strip()
+		+ " "
+		+ testing_df["abstract"].fillna("").astype(str).str.strip()
+	).str.strip()
+
+	cleaned_texts = [
+		clean_text(text)
+		for text in tqdm(
+			combined_texts.tolist(),
+			total=len(combined_texts),
+			desc="Phase 1: Cleaning text",
+			unit="row",
+		)
+	]
+
+	features = vectorizer.transform(cleaned_texts)
+	probability_matrix = build_probability_matrix(model, features)
+	class_labels = get_class_labels(model, probability_matrix.shape[1])
+
+	predicted_categories: list[str] = []
+	confidence_values: list[str] = []
+	predicted_sets: list[set[str]] = []
+
+	threshold_mask = probability_matrix >= threshold
+	for row_index in tqdm(
+		range(len(testing_df)),
+		total=len(testing_df),
+		desc="Phase 1: Predicting labels",
+		unit="row",
+	):
+		row_scores = probability_matrix[row_index]
+		selected_positions = np.where(threshold_mask[row_index])[0]
+
+		if selected_positions.size == 0:
+			predicted_labels: list[str] = []
+			score_parts: list[str] = []
+		else:
+			predicted_labels = [class_labels[position] for position in selected_positions]
+			score_parts = [
+				f"{class_labels[position]}:{row_scores[position]:.4f}"
+				for position in selected_positions
+			]
+
+		predicted_sets.append(set(predicted_labels))
+		predicted_categories.append(" ".join(predicted_labels))
+		confidence_values.append("; ".join(score_parts))
+
+	result_df = testing_df[["title", "abstract"]].copy()
+	result_df["predicted_category"] = predicted_categories
+	result_df["confidence"] = confidence_values
+
+	result_df.to_csv(result_path, index=False)
+	print(f"[phase 1] wrote blind prediction results: {result_path}")
+
+	return result_df, predicted_sets, class_labels
+
+
+def run_verification_phase(
+	result_df: pd.DataFrame,
+	predicted_sets: list[set[str]],
+	class_labels: list[str],
+	checking_csv_path: Path,
+	result_path: Path,
+	row_limit: int | None,
+) -> tuple[pd.DataFrame, dict[str, float], pd.DataFrame]:
+	checking_df = read_csv_with_required_columns(checking_csv_path, ["title", "abstract", "categories"])
+	checking_df = truncate_to_limit(checking_df, row_limit, "checking file")
+	require_columns(checking_df, ["title", "abstract", "categories"], str(checking_csv_path))
+
+	check = checking_df[["title", "categories"]].copy()
+	check["_actual_set"] = check["categories"].apply(lambda value: set(parse_categories(value)))
+	check["_title_key"] = check["title"].apply(normalize_title)
+	check["_title_occurrence"] = check.groupby("_title_key").cumcount()
+	check["_row_id"] = np.arange(len(check))
+
+	merged = result_df.copy()
+	merged["_predicted_set"] = predicted_sets
+	merged["_title_key"] = merged["title"].apply(normalize_title)
+	merged["_title_occurrence"] = merged.groupby("_title_key").cumcount()
+	merged["_row_id"] = np.arange(len(merged))
+
+	merged = merged.merge(
+		check[["_title_key", "_title_occurrence", "_row_id", "categories", "_actual_set"]],
+		on=["_title_key", "_title_occurrence"],
+		how="left",
+		suffixes=("", "_check"),
+		validate="one_to_one",
+	)
+
+	missing_actual = merged["_actual_set"].isna()
+	if missing_actual.any():
+		fallback = merged.loc[missing_actual, ["_row_id"]].merge(
+			check[["_row_id", "categories", "_actual_set"]],
+			on="_row_id",
+			how="left",
+		)
+		merged.loc[missing_actual, "categories"] = fallback["categories"].values
+		merged.loc[missing_actual, "_actual_set"] = fallback["_actual_set"].values
+
+	merged["_actual_set"] = merged["_actual_set"].apply(
+		lambda value: value if isinstance(value, set) else set()
+	)
+	merged["actual_category"] = merged["categories"].fillna("").astype(str)
+
+	class_set = set(class_labels)
+	merged["_unknown_actual_set"] = merged["_actual_set"].apply(
+		lambda labels: sorted(labels - class_set)
+	)
+	merged["unseen_actual_categories"] = merged["_unknown_actual_set"].apply(" ".join)
+	merged["has_unseen_actual_categories"] = merged["_unknown_actual_set"].apply(
+		lambda labels: bool(labels)
+	)
+
+	merged["is_exact_match"] = merged.apply(
+		lambda row: row["_predicted_set"] == row["_actual_set"], axis=1
+	)
+	merged["is_partial_match"] = merged.apply(
+		lambda row: len(row["_predicted_set"] & row["_actual_set"]) > 0,
+		axis=1,
+	)
+
+	actual_known_sets = merged["_actual_set"].apply(lambda labels: sorted(labels & class_set)).tolist()
+	predicted_list_sets = merged["_predicted_set"].apply(lambda labels: sorted(labels)).tolist()
+
+	mlb = MultiLabelBinarizer(classes=class_labels)
+	mlb.fit([class_labels])
+	y_true = mlb.transform(actual_known_sets)
+	y_pred = mlb.transform(predicted_list_sets)
+
+	subset_accuracy_value = float(accuracy_score(y_true, y_pred))
+	hamming_loss_value = float(hamming_loss(y_true, y_pred))
+
+	report = classification_report(
+		y_true,
+		y_pred,
+		target_names=class_labels,
+		output_dict=True,
+		zero_division=0,
+	)
+
+	per_category_rows: list[dict[str, float | str]] = []
+	for category_name in class_labels:
+		category_metrics = report.get(category_name, {})
+		per_category_rows.append(
+			{
+				"category": category_name,
+				"precision": float(category_metrics.get("precision", 0.0)),
+				"recall": float(category_metrics.get("recall", 0.0)),
+				"f1": float(category_metrics.get("f1-score", 0.0)),
+				"support": float(category_metrics.get("support", 0.0)),
+			}
+		)
+
+	per_category_df = pd.DataFrame(per_category_rows)
+	worst_f1_df = per_category_df.sort_values(["f1", "support", "category"]).head(10)
+
+	exact_match_rate_value = float(merged["is_exact_match"].mean())
+	partial_match_rate_value = float(merged["is_partial_match"].mean())
+
+	merged["overall_exact_match_rate"] = exact_match_rate_value
+	merged["overall_partial_match_rate"] = partial_match_rate_value
+	merged["overall_subset_accuracy"] = subset_accuracy_value
+	merged["overall_hamming_loss"] = hamming_loss_value
+
+	output_columns = [
+		"title",
+		"abstract",
+		"predicted_category",
+		"confidence",
+		"actual_category",
+		"is_exact_match",
+		"is_partial_match",
+		"unseen_actual_categories",
+		"has_unseen_actual_categories",
+		"overall_exact_match_rate",
+		"overall_partial_match_rate",
+		"overall_subset_accuracy",
+		"overall_hamming_loss",
+	]
+
+	merged[output_columns].to_csv(result_path, index=False)
+	print(f"[phase 2] wrote enriched verification results: {result_path}")
+
+	overall_metrics = {
+		"exact_match_rate": exact_match_rate_value,
+		"partial_match_rate": partial_match_rate_value,
+		"subset_accuracy": subset_accuracy_value,
+		"hamming_loss": hamming_loss_value,
+	}
+
+	return merged[output_columns], overall_metrics, worst_f1_df
+
+
+def print_console_report(overall_metrics: dict[str, float], worst_f1_df: pd.DataFrame) -> None:
+	print("\n=== Console Summary Report ===")
+	print(f"Exact match rate: {overall_metrics['exact_match_rate'] * 100:.2f}%")
+	print(f"Partial match rate: {overall_metrics['partial_match_rate'] * 100:.2f}%")
+	print(f"Subset accuracy: {overall_metrics['subset_accuracy'] * 100:.2f}%")
+	print(f"Hamming loss: {overall_metrics['hamming_loss']:.6f}")
+	print("\nTop 10 worst categories by F1-score:")
+	for row in worst_f1_df.itertuples(index=False):
+		print(
+			f"- {row.category}: f1={row.f1:.4f}, "
+			f"precision={row.precision:.4f}, recall={row.recall:.4f}, support={int(row.support)}"
+		)
+
+
 def parse_args() -> argparse.Namespace:
-	parser = argparse.ArgumentParser(description="Generate model confidence and accuracy report.")
-	parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET_PATH)
-	parser.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR)
-	parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-	parser.add_argument("--top-k", type=int, default=5)
-	parser.add_argument("--confidence-bins", type=int, default=10)
+	parser = argparse.ArgumentParser(
+		description="Evaluate multi-label category predictions in blind prediction and verification phases."
+	)
+	parser.add_argument("--testing-csv", type=Path, default=None)
+	parser.add_argument("--checking-csv", type=Path, default=None)
+	parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL_PATH)
+	parser.add_argument("--vectorizer-path", type=Path, default=DEFAULT_VECTORIZER_PATH)
+	parser.add_argument("--result-csv", type=Path, default=DEFAULT_RESULT_PATH)
+	parser.add_argument("--threshold", type=float, default=PREDICTION_THRESHOLD)
+	parser.add_argument(
+		"--row-limit",
+		type=int,
+		default=TRAINING_DATA_LIMIT,
+		help=(
+			"Maximum rows to process. Default keeps evaluation aligned with the 25,000-row training subset. "
+			"Set 0 or negative value to disable limit."
+		),
+	)
 	return parser.parse_args()
-
-
-def load_dataset(dataset_path: Path) -> list[dict[str, Any]]:
-	records: list[dict[str, Any]] = []
-	with dataset_path.open("r", encoding="utf-8", newline="") as handle:
-		reader = csv.DictReader(handle)
-		for index, row in enumerate(reader):
-			title = (row.get("title") or "").strip()
-			abstract = (row.get("abstract") or "").strip()
-			categories = [item for item in (row.get("categories") or "").split() if item]
-			if not categories:
-				continue
-
-			text = " ".join(part for part in [title, abstract] if part).strip()
-			if not text:
-				continue
-
-			records.append(
-				{
-					"id": (row.get("id") or str(index)).strip(),
-					"text": text,
-					"labels": categories,
-				}
-			)
-
-	if not records:
-		raise ValueError(f"No usable rows found in dataset: {dataset_path}")
-
-	return records
-
-
-def load_artifacts(model_dir: Path) -> tuple[Any, Any]:
-	model_path = model_dir / "model.pkl"
-	vectorizer_path = model_dir / "vectorizer.pkl"
-	if not model_path.exists():
-		raise FileNotFoundError(f"Model file not found: {model_path}")
-	if not vectorizer_path.exists():
-		raise FileNotFoundError(f"Vectorizer file not found: {vectorizer_path}")
-	return joblib.load(model_path), joblib.load(vectorizer_path)
-
-
-def build_score_matrix(model: Any, x_matrix: Any) -> np.ndarray:
-	if hasattr(model, "predict_proba"):
-		probabilities = model.predict_proba(x_matrix)
-		if isinstance(probabilities, list):
-			columns = []
-			for item in probabilities:
-				arr = np.asarray(item)
-				if arr.ndim == 2 and arr.shape[1] > 1:
-					columns.append(arr[:, 1])
-				else:
-					columns.append(np.ravel(arr))
-			scores = np.column_stack(columns)
-		else:
-			scores = np.asarray(probabilities)
-	else:
-		decision = np.asarray(model.decision_function(x_matrix))
-		scores = 1.0 / (1.0 + np.exp(-decision))
-
-	if scores.ndim == 1:
-		scores = scores.reshape(-1, 1)
-	return scores
-
-
-def compute_confidence_bins(
-	top_confidence: np.ndarray, top_correct: np.ndarray, bins: int
-) -> tuple[list[dict[str, Any]], float]:
-	edges = np.linspace(0.0, 1.0, bins + 1)
-	bin_ids = np.digitize(top_confidence, edges[1:-1], right=False)
-	stats: list[dict[str, Any]] = []
-	total = float(len(top_confidence))
-	ece = 0.0
-
-	for idx in range(bins):
-		mask = bin_ids == idx
-		count = int(mask.sum())
-		low = float(edges[idx])
-		high = float(edges[idx + 1])
-		if count == 0:
-			accuracy = 0.0
-			avg_conf = float((low + high) / 2.0)
-		else:
-			accuracy = float(np.mean(top_correct[mask]))
-			avg_conf = float(np.mean(top_confidence[mask]))
-			ece += (count / total) * abs(accuracy - avg_conf)
-
-		stats.append(
-			{
-				"bin": idx,
-				"range_low": low,
-				"range_high": high,
-				"count": count,
-				"accuracy": accuracy,
-				"avg_confidence": avg_conf,
-			}
-		)
-
-	return stats, float(ece)
-
-
-def topk_hit_rate(scores: np.ndarray, classes: np.ndarray, true_sets: list[set[str]], k: int) -> float:
-	ranked = np.argsort(scores, axis=1)[:, ::-1]
-	k = max(1, min(k, scores.shape[1]))
-	hits = []
-	for row_index, true_labels in enumerate(true_sets):
-		labels = classes[ranked[row_index, :k]]
-		hits.append(any(label in true_labels for label in labels))
-	return float(np.mean(hits))
-
-
-def evaluate(records: list[dict[str, Any]], model: Any, vectorizer: Any, top_k: int, bins: int) -> dict[str, Any]:
-	cleaned_texts = [clean_text(item["text"]) for item in records]
-	x_matrix = vectorizer.transform(cleaned_texts)
-	scores = build_score_matrix(model, x_matrix)
-
-	classes = np.asarray(getattr(model, "classes_", []), dtype=str)
-	if classes.size == 0:
-		raise RuntimeError("Model does not expose classes_.")
-
-	true_sets = [set(item["labels"]) for item in records]
-	n_samples = len(records)
-	n_classes = len(classes)
-	top_k = max(1, min(top_k, n_classes))
-
-	ranked = np.argsort(scores, axis=1)[:, ::-1]
-	top_indices = ranked[:, 0]
-	row_ids = np.arange(n_samples)
-	top_labels = classes[top_indices]
-	top_confidence = scores[row_ids, top_indices]
-	top_correct = np.array([label in true_sets[i] for i, label in enumerate(top_labels)], dtype=float)
-
-	label_to_index = {label: idx for idx, label in enumerate(classes)}
-	y_true = np.zeros((n_samples, n_classes), dtype=int)
-	y_pred_topk = np.zeros((n_samples, n_classes), dtype=int)
-
-	for row_index, labels in enumerate(true_sets):
-		for label in labels:
-			if label in label_to_index:
-				y_true[row_index, label_to_index[label]] = 1
-
-		for col_index in ranked[row_index, :top_k]:
-			y_pred_topk[row_index, int(col_index)] = 1
-
-	micro_precision, micro_recall, micro_f1, _ = precision_recall_fscore_support(
-		y_true, y_pred_topk, average="micro", zero_division=0
-	)
-	macro_precision, macro_recall, macro_f1, _ = precision_recall_fscore_support(
-		y_true, y_pred_topk, average="macro", zero_division=0
-	)
-
-	bin_stats, ece = compute_confidence_bins(top_confidence, top_correct, bins)
-	brier = float(np.mean((top_confidence - top_correct) ** 2))
-
-	top3_acc = topk_hit_rate(scores, classes, true_sets, 3)
-	top5_acc = topk_hit_rate(scores, classes, true_sets, 5)
-
-	rows: list[dict[str, Any]] = []
-	for row_index, record in enumerate(records):
-		predicted_topk = [str(classes[idx]) for idx in ranked[row_index, :top_k]]
-		rows.append(
-			{
-				"id": record["id"],
-				"true_labels": list(sorted(true_sets[row_index])),
-				"top_prediction": str(top_labels[row_index]),
-				"top_confidence": float(top_confidence[row_index]),
-				"top_prediction_correct": bool(top_correct[row_index]),
-				"predicted_top_k": predicted_topk,
-			}
-		)
-
-	metrics = {
-		"samples": n_samples,
-		"classes": n_classes,
-		"top_k_used": top_k,
-		"top1_accuracy": float(np.mean(top_correct)),
-		"top3_accuracy": top3_acc,
-		"top5_accuracy": top5_acc,
-		"micro_precision": float(micro_precision),
-		"micro_recall": float(micro_recall),
-		"micro_f1": float(micro_f1),
-		"macro_precision": float(macro_precision),
-		"macro_recall": float(macro_recall),
-		"macro_f1": float(macro_f1),
-		"mean_top_confidence": float(np.mean(top_confidence)),
-		"mean_confidence_correct": float(np.mean(top_confidence[top_correct == 1])) if np.any(top_correct == 1) else 0.0,
-		"mean_confidence_incorrect": float(np.mean(top_confidence[top_correct == 0])) if np.any(top_correct == 0) else 0.0,
-		"ece": ece,
-		"brier_top1": brier,
-	}
-
-	return {
-		"metrics": metrics,
-		"bins": bin_stats,
-		"per_sample": rows,
-		"plot_inputs": {
-			"top_confidence": top_confidence,
-			"top_correct": top_correct,
-		},
-	}
-
-
-def save_visualizations(report: dict[str, Any], output_dir: Path) -> None:
-	output_dir.mkdir(parents=True, exist_ok=True)
-	metrics = report["metrics"]
-	bins = report["bins"]
-	top_conf = report["plot_inputs"]["top_confidence"]
-	top_correct = report["plot_inputs"]["top_correct"]
-
-	plt.figure(figsize=(10, 5))
-	correct_conf = top_conf[top_correct == 1]
-	incorrect_conf = top_conf[top_correct == 0]
-	if len(correct_conf) > 0:
-		plt.hist(correct_conf, bins=20, alpha=0.65, label="Correct", color="#2ca02c")
-	if len(incorrect_conf) > 0:
-		plt.hist(incorrect_conf, bins=20, alpha=0.65, label="Incorrect", color="#d62728")
-	plt.xlabel("Top-1 confidence")
-	plt.ylabel("Samples")
-	plt.title("Confidence Distribution")
-	plt.legend()
-	plt.tight_layout()
-	plt.savefig(output_dir / "confidence-distribution.png", dpi=160)
-	plt.close()
-
-	bin_centers = np.array([(b["range_low"] + b["range_high"]) / 2.0 for b in bins], dtype=float)
-	bin_acc = np.array([b["accuracy"] for b in bins], dtype=float)
-	bin_count = np.array([b["count"] for b in bins], dtype=float)
-
-	fig, ax1 = plt.subplots(figsize=(8, 8))
-	ax1.plot([0, 1], [0, 1], linestyle="--", color="gray", label="Perfect calibration")
-	ax1.plot(bin_centers, bin_acc, marker="o", linewidth=2, color="#1f77b4", label="Empirical accuracy")
-	ax1.set_xlim(0, 1)
-	ax1.set_ylim(0, 1)
-	ax1.set_xlabel("Confidence")
-	ax1.set_ylabel("Accuracy")
-	ax1.set_title("Reliability Diagram")
-
-	ax2 = ax1.twinx()
-	ax2.bar(bin_centers, bin_count, width=0.08, alpha=0.25, color="#ff7f0e", label="Bin count")
-	ax2.set_ylabel("Bin count")
-
-	lines1, labels1 = ax1.get_legend_handles_labels()
-	lines2, labels2 = ax2.get_legend_handles_labels()
-	ax1.legend(lines1 + lines2, labels1 + labels2, loc="lower right")
-	fig.tight_layout()
-	fig.savefig(output_dir / "reliability-diagram.png", dpi=160)
-	plt.close(fig)
-
-	metric_names = ["Top-1", "Top-3", "Top-5", "Micro F1", "Macro F1"]
-	metric_values = [
-		metrics["top1_accuracy"],
-		metrics["top3_accuracy"],
-		metrics["top5_accuracy"],
-		metrics["micro_f1"],
-		metrics["macro_f1"],
-	]
-	plt.figure(figsize=(9, 5))
-	bars = plt.bar(metric_names, metric_values, color=["#4e79a7", "#59a14f", "#76b7b2", "#f28e2b", "#e15759"])
-	for bar, value in zip(bars, metric_values):
-		plt.text(bar.get_x() + bar.get_width() / 2, value + 0.01, f"{value:.3f}", ha="center", va="bottom")
-	plt.ylim(0, 1.05)
-	plt.ylabel("Score")
-	plt.title("Model Performance Summary")
-	plt.tight_layout()
-	plt.savefig(output_dir / "performance-summary.png", dpi=160)
-	plt.close()
-
-
-def write_outputs(report: dict[str, Any], output_dir: Path) -> None:
-	output_dir.mkdir(parents=True, exist_ok=True)
-
-	json_report = {
-		"metrics": report["metrics"],
-		"bins": report["bins"],
-	}
-	with (output_dir / "confidence-report.json").open("w", encoding="utf-8") as handle:
-		json.dump(json_report, handle, indent=2)
-
-	metrics = report["metrics"]
-	lines = [
-		"Keyword Model Confidence Report",
-		"",
-		f"samples={metrics['samples']}",
-		f"classes={metrics['classes']}",
-		f"top_k_used={metrics['top_k_used']}",
-		"",
-		f"top1_accuracy={metrics['top1_accuracy']:.4f}",
-		f"top3_accuracy={metrics['top3_accuracy']:.4f}",
-		f"top5_accuracy={metrics['top5_accuracy']:.4f}",
-		f"micro_precision={metrics['micro_precision']:.4f}",
-		f"micro_recall={metrics['micro_recall']:.4f}",
-		f"micro_f1={metrics['micro_f1']:.4f}",
-		f"macro_precision={metrics['macro_precision']:.4f}",
-		f"macro_recall={metrics['macro_recall']:.4f}",
-		f"macro_f1={metrics['macro_f1']:.4f}",
-		"",
-		f"mean_top_confidence={metrics['mean_top_confidence']:.4f}",
-		f"mean_confidence_correct={metrics['mean_confidence_correct']:.4f}",
-		f"mean_confidence_incorrect={metrics['mean_confidence_incorrect']:.4f}",
-		f"ece={metrics['ece']:.4f}",
-		f"brier_top1={metrics['brier_top1']:.4f}",
-		"",
-		"Plots:",
-		"- confidence-distribution.png",
-		"- reliability-diagram.png",
-		"- performance-summary.png",
-	]
-	with (output_dir / "confidence-report.txt").open("w", encoding="utf-8") as handle:
-		handle.write("\n".join(lines) + "\n")
-
-	with (output_dir / "per-sample-predictions.csv").open("w", encoding="utf-8", newline="") as handle:
-		writer = csv.DictWriter(
-			handle,
-			fieldnames=[
-				"id",
-				"true_labels",
-				"top_prediction",
-				"top_confidence",
-				"top_prediction_correct",
-				"predicted_top_k",
-			],
-		)
-		writer.writeheader()
-		for row in report["per_sample"]:
-			writer.writerow(
-				{
-					"id": row["id"],
-					"true_labels": " ".join(row["true_labels"]),
-					"top_prediction": row["top_prediction"],
-					"top_confidence": f"{row['top_confidence']:.6f}",
-					"top_prediction_correct": str(row["top_prediction_correct"]),
-					"predicted_top_k": " ".join(row["predicted_top_k"]),
-				}
-			)
 
 
 def main() -> None:
 	args = parse_args()
-	records = load_dataset(args.dataset)
-	model, vectorizer = load_artifacts(args.model_dir)
-	report = evaluate(records, model, vectorizer, top_k=args.top_k, bins=args.confidence_bins)
-	write_outputs(report, args.output_dir)
-	save_visualizations(report, args.output_dir)
 
-	metrics = report["metrics"]
-	print(f"report_saved={args.output_dir}")
-	print(f"samples={metrics['samples']}")
-	print(f"top1_accuracy={metrics['top1_accuracy']:.4f}")
-	print(f"top5_accuracy={metrics['top5_accuracy']:.4f}")
-	print(f"micro_f1={metrics['micro_f1']:.4f}")
-	print(f"ece={metrics['ece']:.4f}")
+	testing_csv_path = resolve_input_file(BASE_DIR, TESTING_CSV_CANDIDATES, args.testing_csv)
+	checking_csv_path = resolve_input_file(BASE_DIR, CHECKING_CSV_CANDIDATES, args.checking_csv)
+
+	if not args.model_path.exists():
+		raise FileNotFoundError(f"Model file not found: {args.model_path}")
+	if not args.vectorizer_path.exists():
+		raise FileNotFoundError(f"Vectorizer file not found: {args.vectorizer_path}")
+
+	print(f"testing_csv={testing_csv_path}")
+	print(f"checking_csv={checking_csv_path}")
+	print(f"model_path={args.model_path}")
+	print(f"vectorizer_path={args.vectorizer_path}")
+	print(f"result_csv={args.result_csv}")
+	print(f"threshold={args.threshold}")
+	print(f"row_limit={args.row_limit}")
+
+	model = joblib.load(args.model_path)
+	vectorizer = joblib.load(args.vectorizer_path)
+
+	result_df, predicted_sets, class_labels = run_prediction_phase(
+		testing_csv_path=testing_csv_path,
+		model=model,
+		vectorizer=vectorizer,
+		threshold=args.threshold,
+		row_limit=args.row_limit,
+		result_path=args.result_csv,
+	)
+
+	_, overall_metrics, worst_f1_df = run_verification_phase(
+		result_df=result_df,
+		predicted_sets=predicted_sets,
+		class_labels=class_labels,
+		checking_csv_path=checking_csv_path,
+		result_path=args.result_csv,
+		row_limit=args.row_limit,
+	)
+
+	print_console_report(overall_metrics, worst_f1_df)
 
 
 if __name__ == "__main__":
