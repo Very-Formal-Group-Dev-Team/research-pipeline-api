@@ -281,7 +281,7 @@ async function withdrawReviewRequest(projectId, userId) {
   return { data: { success: true } };
 }
 
-async function completeReviewRequest(projectId, userId) {
+async function completeReviewRequest(projectId, userId, { force = false } = {}) {
   const project = await getProjectById(projectId);
   if (!project) {
     return { error: 'Project not found', status: 404 };
@@ -294,6 +294,20 @@ async function completeReviewRequest(projectId, userId) {
   const active = await getActiveReviewRequest(projectId);
   if (!active) {
     return { error: 'No active review request for this project', status: 404 };
+  }
+
+  const commentCounts = await require('../paper_comments/paper_comments.service')
+    .getOpenCommentCountsForReview(projectId, active.paper_version_id);
+  const unresolved = commentCounts.open + commentCounts.needs_revision;
+  if (unresolved > 0 && !force) {
+    return {
+      error: 'Unresolved comments remain on this version',
+      status: 409,
+      data: {
+        requiresConfirmation: true,
+        commentCounts,
+      },
+    };
   }
 
   const conn = await db.pool.getConnection();
@@ -313,6 +327,12 @@ async function completeReviewRequest(projectId, userId) {
     );
     const adviserName = adviserRows[0]?.full_name || 'Your adviser';
 
+    await require('../paper_comments/paper_comments.service').linkCommentsToReviewOnComplete(
+      projectId,
+      active.id,
+      active.paper_version_id,
+    );
+
     await conn.commit();
 
     await notificationsService.createNotification({
@@ -328,13 +348,27 @@ async function completeReviewRequest(projectId, userId) {
       },
     });
 
-    return { data: { success: true } };
+    return { data: { success: true, commentCounts } };
   } catch (err) {
     await conn.rollback();
     throw err;
   } finally {
     conn.release();
   }
+}
+
+async function getReviewCommentSummary(projectId, userId) {
+  const result = await getReviewRequestForMember(projectId, userId);
+  if (result.error) {
+    return result;
+  }
+  const active = result.data;
+  if (!active) {
+    return { data: { reviewRequest: null, commentCounts: null } };
+  }
+  const commentCounts = await require('../paper_comments/paper_comments.service')
+    .getOpenCommentCountsForReview(projectId, active.paper_version_id);
+  return { data: { reviewRequest: active, commentCounts } };
 }
 
 async function getPendingReviewsForAdviser(userId) {
@@ -373,6 +407,7 @@ async function getPendingReviewsForAdviser(userId) {
 module.exports = {
   getActiveReviewRequest,
   getReviewRequestForMember,
+  getReviewCommentSummary,
   requestReview,
   withdrawReviewRequest,
   completeReviewRequest,

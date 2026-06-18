@@ -1,14 +1,16 @@
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const mammoth = require('mammoth');
 const Diff = require('diff');
 const paperVersionsService = require('./paper_versions.service');
 const coordinatorService = require('../coordinator/coordinator.service');
 const { editTemplate } = require('./template.editor');
-const { uploadBase } = require('../../../config/env');
-
-const FILES_DIR = path.join(uploadBase, 'files');
+const {
+  FILES_DIR,
+  resolveFilePath,
+  extractText,
+  getRenderableHtml,
+} = require('./paper_text.util');
 
 function ensureFilesDir() {
   if (!fs.existsSync(FILES_DIR)) {
@@ -161,72 +163,6 @@ async function download(req, res) {
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(version.file_name)}"`);
   res.setHeader('Content-Type', version.mime_type || 'application/octet-stream');
   return res.sendFile(absolutePath);
-}
-
-function resolveFilePath(fileUrl) {
-  // file_url is stored as /uploads/files/<filename>
-  // Extract the filename from the URL
-  const filename = path.basename(fileUrl);
-  const absolutePath = path.join(FILES_DIR, filename);
-
-  // Verify the file is within FILES_DIR to prevent path traversal
-  const normalizedPath = path.normalize(absolutePath);
-  const normalizedDir = path.normalize(FILES_DIR);
-  if (!normalizedPath.startsWith(normalizedDir)) {
-    throw new Error('Invalid file path');
-  }
-
-  return absolutePath;
-}
-
-function escapeHtml(text) {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function textToHtml(text) {
-  const normalized = (text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
-  if (!normalized) return null;
-
-  return normalized
-    .split(/\n{2,}/)
-    .map((paragraph) => `<p>${escapeHtml(paragraph.trim()).replace(/\n/g, '<br />')}</p>`)
-    .join('');
-}
-
-async function getRenderableHtml(filePath, extractedText) {
-  const ext = path.extname(filePath).toLowerCase();
-  if (ext !== '.docx') {
-    return null;
-  }
-
-  try {
-    const converted = await mammoth.convertToHtml({ path: filePath });
-    if (converted && converted.value && converted.value.trim()) {
-      return converted.value;
-    }
-  } catch (err) {
-    // ignore and fall back to plain text HTML
-  }
-
-  const sourceText = typeof extractedText === 'string' ? extractedText : await extractText(filePath);
-  return textToHtml(sourceText);
-}
-
-async function extractText(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-  if (ext === '.docx') {
-    const result = await mammoth.extractRawText({ path: filePath });
-    return result.value;
-  }
-  if (ext === '.txt') {
-    return fs.readFileSync(filePath, 'utf8');
-  }
-  return null;
 }
 
 function countWords(text) {
