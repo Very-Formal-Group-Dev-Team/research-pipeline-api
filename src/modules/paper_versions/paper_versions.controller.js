@@ -3,13 +3,16 @@ const fs = require('fs');
 const crypto = require('crypto');
 const Diff = require('diff');
 const paperVersionsService = require('./paper_versions.service');
+const paperBranchesService = require('./paper_branches.service');
 const coordinatorService = require('../coordinator/coordinator.service');
+const { Document, Packer, Paragraph } = require('docx');
 const { editTemplate } = require('./template.editor');
 const {
   FILES_DIR,
   resolveFilePath,
   extractText,
   getRenderableHtml,
+  textToHtml,
 } = require('./paper_text.util');
 
 function ensureFilesDir() {
@@ -50,9 +53,15 @@ async function upload(req, res) {
     return res.status(400).json({ error: 'A .docx file is required' });
   }
 
-  const { commitMessage } = req.body;
+  const { commitMessage, branchName } = req.body;
   if (!commitMessage || !commitMessage.trim()) {
     return res.status(400).json({ error: 'commitMessage is required' });
+  }
+
+  const targetBranchName = (branchName || '').trim() || 'main';
+  const branch = await paperBranchesService.getBranch(projectId, targetBranchName);
+  if (!branch) {
+    return res.status(404).json({ error: `Branch "${targetBranchName}" not found` });
   }
 
   const fileUrl = `/uploads/files/${req.file.filename}`;
@@ -66,6 +75,8 @@ async function upload(req, res) {
     tag: null,
     uploadedBy: req.user.id,
     isGenerated: false,
+    branchId: branch.id,
+    parentVersionId: branch.head_version_id || null,
   });
 
   return res.status(201).json({ versionNumber, fileUrl });
@@ -87,10 +98,16 @@ async function generate(req, res) {
 
   const { project, members, institution } = templateData;
 
-  const { commitMessage } = req.body;
+  const { commitMessage, branchName } = req.body;
   const message = (commitMessage && commitMessage.trim())
     ? commitMessage.trim()
     : `Generated ${(project.paper_standard || 'ieee').toUpperCase()} template`;
+
+  const targetBranchName = (branchName || '').trim() || 'main';
+  const branch = await paperBranchesService.getBranch(projectId, targetBranchName);
+  if (!branch) {
+    return res.status(404).json({ error: `Branch "${targetBranchName}" not found` });
+  }
 
   ensureFilesDir();
 
@@ -125,9 +142,25 @@ async function generate(req, res) {
     tag: 'template',
     uploadedBy: req.user.id,
     isGenerated: true,
+    branchId: branch.id,
+    parentVersionId: branch.head_version_id || null,
   });
 
   return res.status(201).json({ versionNumber, fileUrl });
+}
+
+async function buildDocxFromText(contentText) {
+  const paragraphs = contentText
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((text) => new Paragraph({ text }));
+
+  const doc = new Document({
+    sections: [{ children: paragraphs }],
+  });
+
+  return Packer.toBuffer(doc);
 }
 
 /** GET /projects/:id/paper-versions/:versionId/download */
@@ -142,6 +175,23 @@ async function download(req, res) {
   const version = await paperVersionsService.getPaperVersionById(projectId, versionId);
   if (!version) {
     return res.status(404).json({ error: 'Version not found' });
+  }
+
+  // Merge commits reuse the target branch's old file_url — that file does not represent
+  // the merged content. The merged text lives in content_text instead.
+  // Detection: tag === 'merge' (strict string equality) is unambiguously false for every
+  // regular upload and generated version, regardless of nullable-column edge cases.
+  if (version.tag === 'merge' && version.content_text) {
+    const docxFilename = version.file_name.replace(/\.[^.]+$/, '') + '.docx';
+    const buffer = await buildDocxFromText(version.content_text);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(docxFilename)}"`);
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    );
+    // res.end(Buffer) keeps the same safe response pattern as the .txt fix —
+    // raw bytes only, no string-encoding side effects on the connection.
+    return res.end(buffer);
   }
 
   // file_url is stored as /uploads/files/<filename>
@@ -185,12 +235,25 @@ async function diff(req, res) {
 
   const previous = await paperVersionsService.getPreviousVersion(projectId, version.version_number);
 
-  const currentPath = resolveFilePath(version.file_url);
-  if (!fs.existsSync(currentPath)) {
-    return res.status(404).json({ error: 'Current version file not found on disk' });
-  }
+  // Merge commits reuse the target branch's old file_url; that file is identical to
+  // the previous version's file and does not represent the merged content. Use
+  // content_text (set to the final merged text at commit time) for both text
+  // extraction and HTML generation for any version where tag === 'merge'.
+  // Using strict string equality avoids any loose-null-comparison edge cases and is
+  // unambiguously false for every regular upload and generated template.
+  const getContent = async (v) => {
+    if (v.tag === 'merge' && v.content_text) {
+      return { text: v.content_text, html: textToHtml(v.content_text) };
+    }
+    const filePath = resolveFilePath(v.file_url);
+    if (!fs.existsSync(filePath)) return { text: null, html: null };
+    const text = await extractText(filePath);
+    const html = text != null ? await getRenderableHtml(filePath, text) : null;
+    return { text, html };
+  };
 
-  const currentText = await extractText(currentPath);
+  const { text: currentText, html: currentHtml } = await getContent(version);
+
   if (currentText === null) {
     return res.json({
       supported: false,
@@ -199,8 +262,6 @@ async function diff(req, res) {
       previousWords: 0,
     });
   }
-
-  const currentHtml = await getRenderableHtml(currentPath, currentText);
 
   const currentWords = countWords(currentText);
 
@@ -219,12 +280,8 @@ async function diff(req, res) {
     });
   }
 
-  const previousPath = resolveFilePath(previous.file_url);
-  let previousText = '';
-  if (fs.existsSync(previousPath)) {
-    previousText = (await extractText(previousPath)) || '';
-  }
-
+  const { text: prevText, html: previousHtml } = await getContent(previous);
+  const previousText = prevText || '';
   const previousWords = countWords(previousText);
   const changes = Diff.diffWords(previousText, currentText);
 
@@ -235,10 +292,6 @@ async function diff(req, res) {
     if (part.added) addedWords += wc;
     if (part.removed) removedWords += wc;
   }
-
-  const previousHtml = fs.existsSync(previousPath)
-    ? await getRenderableHtml(previousPath, previousText)
-    : null;
 
   return res.json({
     supported: true,

@@ -1,14 +1,7 @@
+const { randomUUID } = require('crypto');
 const db = require('../../../config/db');
 const notificationsService = require('../notifications/notifications.service');
-
-/** Return the next version number for a project (max + 1, or 1 if none). */
-async function getNextVersionNumber(projectId) {
-  const { rows } = await db.query(
-    'SELECT COALESCE(MAX(version_number), 0) AS max_v FROM paper_versions WHERE project_id = ?',
-    [projectId],
-  );
-  return (rows[0]?.max_v ?? 0) + 1;
-}
+const { resolveFilePath, extractText } = require('./paper_text.util');
 
 /** Bump project.updated_at (timeline "Last updated" on project detail pages). */
 async function touchProjectUpdatedAt(projectId) {
@@ -68,28 +61,110 @@ async function notifyStudentMembersOfPaperCommit({
   );
 }
 
-/** Insert a new paper version row. */
-async function createPaperVersion({ projectId, fileUrl, fileName, fileSize, mimeType, commitMessage, tag, uploadedBy, isGenerated }) {
-  const versionNumber = await getNextVersionNumber(projectId);
+/** Insert a new paper version row.
+ *
+ * branchId      – target branch id; omit to auto-resolve the project's "main" branch.
+ * parentVersionId – explicit parent; omit to use the branch's current head.
+ *
+ * version_number is assigned inside a transaction with SELECT…FOR UPDATE on the branch
+ * row so concurrent commits to the same branch cannot produce duplicate numbers.
+ */
+async function createPaperVersion({
+  projectId,
+  fileUrl,
+  fileName,
+  fileSize,
+  mimeType,
+  commitMessage,
+  tag,
+  uploadedBy,
+  isGenerated,
+  branchId,
+  parentVersionId,
+}) {
+  let contentText = null;
+  try {
+    const filePath = resolveFilePath(fileUrl);
+    contentText = await extractText(filePath);
+  } catch {
+    // non-critical — proceed without stored text
+  }
 
-  await db.query(
-    `INSERT INTO paper_versions
-       (project_id, version_number, file_url, file_name, file_size, mime_type,
-        commit_message, tag, uploaded_by, is_generated)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      projectId,
-      versionNumber,
-      fileUrl,
-      fileName,
-      fileSize,
-      mimeType || null,
-      commitMessage,
-      tag || null,
-      uploadedBy,
-      isGenerated ? 1 : 0,
-    ],
-  );
+  const newVersionId = randomUUID();
+  let versionNumber;
+
+  const conn = await db.pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    let resolvedBranchId = branchId || null;
+    let resolvedParentVersionId = parentVersionId !== undefined ? parentVersionId : undefined;
+
+    if (!resolvedBranchId) {
+      await conn.execute(
+        'INSERT IGNORE INTO branches (id, project_id, name) VALUES (?, ?, ?)',
+        [randomUUID(), projectId, 'main'],
+      );
+    }
+
+    const [branchRows] = await conn.execute(
+      resolvedBranchId
+        ? 'SELECT id, head_version_id FROM branches WHERE id = ? LIMIT 1 FOR UPDATE'
+        : 'SELECT id, head_version_id FROM branches WHERE project_id = ? AND name = ? LIMIT 1 FOR UPDATE',
+      resolvedBranchId ? [resolvedBranchId] : [projectId, 'main'],
+    );
+
+    if (!branchRows[0]) {
+      throw new Error(`Branch not found for project ${projectId}`);
+    }
+
+    resolvedBranchId = branchRows[0].id;
+    if (resolvedParentVersionId === undefined) {
+      resolvedParentVersionId = branchRows[0].head_version_id || null;
+    }
+
+    const [countRows] = await conn.execute(
+      'SELECT COALESCE(MAX(version_number), 0) AS max_v FROM paper_versions WHERE branch_id = ?',
+      [resolvedBranchId],
+    );
+    versionNumber = (countRows[0]?.max_v ?? 0) + 1;
+
+    await conn.execute(
+      `INSERT INTO paper_versions
+         (id, project_id, version_number, file_url, file_name, file_size, mime_type,
+          commit_message, tag, uploaded_by, is_generated,
+          branch_id, parent_version_id, content_text)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        newVersionId,
+        projectId,
+        versionNumber,
+        fileUrl,
+        fileName,
+        fileSize,
+        mimeType || null,
+        commitMessage,
+        tag || null,
+        uploadedBy,
+        isGenerated ? 1 : 0,
+        resolvedBranchId,
+        resolvedParentVersionId || null,
+        contentText,
+      ],
+    );
+
+    await conn.execute(
+      'UPDATE branches SET head_version_id = ? WHERE id = ?',
+      [newVersionId, resolvedBranchId],
+    );
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
 
   await touchProjectUpdatedAt(projectId);
 
@@ -186,4 +261,43 @@ async function getPreviousVersion(projectId, versionNumber) {
   return rows[0] || null;
 }
 
-module.exports = { createPaperVersion, getPaperVersions, getPaperVersionById, getPreviousVersion, isProjectMember, getProjectTemplateData };
+/** Walk parent_version_id pointers from versionId to the root.
+ * Returns rows ordered from the given version to the oldest ancestor.
+ * Not currently wired to any endpoint — available for future branch/diff features.
+ */
+async function getVersionAncestry(versionId) {
+  const chain = [];
+  let currentId = versionId;
+  const seen = new Set();
+  const MAX_DEPTH = 1000;
+
+  while (currentId && chain.length < MAX_DEPTH) {
+    if (seen.has(currentId)) break;
+    seen.add(currentId);
+
+    const { rows } = await db.query(
+      `SELECT id, project_id, branch_id, version_number, parent_version_id,
+              commit_message, tag, uploaded_by, created_at
+       FROM paper_versions
+       WHERE id = ?
+       LIMIT 1`,
+      [currentId],
+    );
+
+    if (!rows[0]) break;
+    chain.push(rows[0]);
+    currentId = rows[0].parent_version_id || null;
+  }
+
+  return chain;
+}
+
+module.exports = {
+  createPaperVersion,
+  getPaperVersions,
+  getPaperVersionById,
+  getPreviousVersion,
+  getVersionAncestry,
+  isProjectMember,
+  getProjectTemplateData,
+};

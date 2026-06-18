@@ -3,6 +3,8 @@ const { requireAuth, requireDashboardRole } = require('../../middleware/auth');
 const { createDocumentUpload } = require('../../middleware/multer');
 const controller = require('./projects.controller');
 const paperVersionsRouter = require('../paper_versions/paper_versions.routes');
+const paperBranchesRouter = require('../paper_versions/paper_branches.routes');
+const paperMergeRouter = require('../paper_versions/paper_merge.routes');
 const paperCommentsRouter = require('../paper_comments/paper_comments.routes');
 const paperReviewsController = require('../paper_reviews/paper_reviews.controller');
 
@@ -60,5 +62,7 @@ router.post('/:id/review-request/withdraw', asyncHandler(paperReviewsController.
 router.patch('/:id/review-request/complete', asyncHandler(paperReviewsController.completeReviewRequest));
 router.use('/:id/paper-comments', paperCommentsRouter);
 router.use('/:id/paper-versions', paperVersionsRouter);
+router.use('/:id/branches', paperBranchesRouter);
+router.use('/:id/merge', paperMergeRouter);
 
 module.exports = router;

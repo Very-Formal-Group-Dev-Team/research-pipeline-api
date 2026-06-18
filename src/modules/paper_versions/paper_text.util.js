@@ -2,27 +2,15 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const mammoth = require('mammoth');
+const { marked } = require('marked');
 const { uploadBase } = require('../../../config/env');
 
 const FILES_DIR = path.join(uploadBase, 'files');
 
-function escapeHtml(text) {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 function textToHtml(text) {
   const normalized = (text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
   if (!normalized) return null;
-
-  return normalized
-    .split(/\n{2,}/)
-    .map((paragraph) => `<p>${escapeHtml(paragraph.trim()).replace(/\n/g, '<br />')}</p>`)
-    .join('');
+  return String(marked.parse(normalized));
 }
 
 function resolveFilePath(fileUrl) {
