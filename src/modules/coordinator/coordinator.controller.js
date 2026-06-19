@@ -157,6 +157,10 @@ async function verifyDefense(req, res) {
     rubric_id,
     panelistIds,
     panelist_ids,
+    excludeDefenseIds,
+    exclude_defense_ids,
+    excludeProjectIds,
+    exclude_project_ids,
   } = req.body;
   const result = await coordinatorService.verifyDefense(
     req.params.defenseId,
@@ -176,6 +180,10 @@ async function verifyDefense(req, res) {
       rubric_id,
       panelistIds,
       panelist_ids,
+      excludeDefenseIds,
+      exclude_defense_ids,
+      excludeProjectIds,
+      exclude_project_ids,
     }
   );
 

@@ -261,6 +261,18 @@ function normalizeProjectIds(payload) {
   return Array.from(new Set(raw.map(String).filter(Boolean)));
 }
 
+function normalizeExcludeDefenseIds(payload) {
+  const raw = payload?.excludeDefenseIds ?? payload?.exclude_defense_ids ?? [];
+  if (!Array.isArray(raw)) return [];
+  return Array.from(new Set(raw.map(String).filter(Boolean)));
+}
+
+function normalizeExcludeProjectIds(payload) {
+  const raw = payload?.excludeProjectIds ?? payload?.exclude_project_ids ?? [];
+  if (!Array.isArray(raw)) return [];
+  return Array.from(new Set(raw.map(String).filter(Boolean)));
+}
+
 async function validateInstitutionPanelists(institutionId, panelistIds, queryRunner = db) {
   if (!panelistIds.length) return { data: [] };
 
@@ -961,6 +973,10 @@ async function verifyDefense(
     rubric_id,
     panelistIds,
     panelist_ids,
+    excludeDefenseIds,
+    exclude_defense_ids,
+    excludeProjectIds,
+    exclude_project_ids,
   }
 ) {
   const conn = await db.pool.getConnection();
@@ -1077,6 +1093,15 @@ async function verifyDefense(
     const resolvedModality = modality || defense.modality || 'Online';
     const resolvedVenue = venue ?? defense.venue ?? null;
     const resolvedLocation = location ?? defense.location ?? null;
+    const resolvedExcludeDefenseIds = normalizeExcludeDefenseIds({
+      excludeDefenseIds,
+      exclude_defense_ids,
+    });
+    const resolvedExcludeProjectIds = normalizeExcludeProjectIds({
+      excludeProjectIds,
+      exclude_project_ids,
+    });
+
     const conflicts = await getCoordinatorApprovalConflicts({
       defenseId,
       projectId: defense.project_id,
@@ -1085,6 +1110,8 @@ async function verifyDefense(
       startAt: proposedStartDb,
       endAt: proposedEndDb,
       queryRunner: conn,
+      excludeDefenseIds: resolvedExcludeDefenseIds,
+      excludeProjectIds: resolvedExcludeProjectIds,
     });
 
     if (conflicts.length && !forceApprove && !holdDefense) {
@@ -2118,6 +2145,8 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
   const resolvedRubricId = rubricId || rubric_id || null;
   const resolvedDefenseType = defenseType || defense_type;
   const panelistIds = normalizePanelistIds(payload);
+  const excludeDefenseIds = normalizeExcludeDefenseIds(payload);
+  const excludeProjectIds = normalizeExcludeProjectIds(payload);
   const startInput = scheduledAt || start_time || (date && startTime ? `${date}T${startTime}` : null);
   const endInput = end_time || (date && endTime ? `${date}T${endTime}` : null);
   const scheduleWindow = getScheduleWindow({ start_time: startInput, end_time: endInput });
@@ -2189,6 +2218,8 @@ async function createCoordinatorDefenseBooking(institutionId, coordinatorId, pay
       startAt: normalizedStart.dbValue,
       endAt: normalizedEnd.dbValue,
       queryRunner: conn,
+      excludeDefenseIds,
+      excludeProjectIds,
     });
 
     if (conflicts.length && !forceApprove) {
