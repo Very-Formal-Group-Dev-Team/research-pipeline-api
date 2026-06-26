@@ -143,5 +143,14 @@ async function sendPasswordResetEmail(to, token) {
   });
 }
 
-module.exports = { sendVerificationEmail, sendPasswordResetEmail };
+function isSmtpConfigured() {
+  try {
+    getSmtpConfig();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { sendVerificationEmail, sendPasswordResetEmail, isSmtpConfigured };
 

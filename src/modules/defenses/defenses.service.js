@@ -2149,6 +2149,7 @@ async function getDefenseMeetingSession(userId, defenseId) {
       notes,
       total_score,
       meeting_projects,
+      jitsi_base_url: getJitsiBaseUrl(),
     },
   };
 }

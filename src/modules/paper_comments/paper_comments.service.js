@@ -162,7 +162,7 @@ async function listComments(projectId, userId, { versionId, status } = {}) {
     return { error: 'Version not found', status: 404 };
   }
 
-  const params = [projectId];
+  const params = [projectId, versionId];
   let statusClause = '';
   if (status && ['open', 'resolved', 'needs_revision'].includes(status)) {
     statusClause = ' AND pc.status = ?';
@@ -175,12 +175,14 @@ async function listComments(projectId, userId, { versionId, status } = {}) {
             pm.role AS author_role
      FROM paper_comments pc
      JOIN paper_versions pv ON pv.id = pc.anchor_version_id
+     JOIN paper_versions target_pv ON target_pv.id = ? AND target_pv.project_id = pc.project_id
      JOIN users u ON u.id = pc.author_id
      LEFT JOIN project_members pm
        ON pm.project_id = pc.project_id
       AND pm.user_id = pc.author_id
       AND pm.status = 'accepted'
-     WHERE pc.project_id = ?${statusClause}
+     WHERE pc.project_id = ?
+       AND pv.version_number <= target_pv.version_number${statusClause}
      ORDER BY pc.created_at ASC`,
     params,
   );

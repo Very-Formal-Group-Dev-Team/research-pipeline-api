@@ -40,7 +40,14 @@ const authEmailRateLimit = createRateLimiter({
   message: 'Too many requests. Please try again in an hour.',
 });
 
+const authCredentialRateLimit = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: 'Too many login or registration attempts. Please try again later.',
+});
+
 module.exports = {
   createRateLimiter,
   authEmailRateLimit,
+  authCredentialRateLimit,
 };

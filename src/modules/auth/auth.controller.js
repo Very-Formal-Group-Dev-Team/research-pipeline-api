@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const authService = require('./auth.service');
+const { validatePassword } = require('../../lib/passwordPolicy');
 
 function getCookieOptions(rememberMe = true) {
   const isProduction = process.env.NODE_ENV === 'production';
@@ -24,8 +25,9 @@ async function register(req, res) {
     return res.status(400).json({ error: 'Enter your email and password to continue.' });
   }
 
-  if (password.length < 6) {
-    return res.status(400).json({ error: 'Use a password with at least 6 characters.' });
+  const passwordError = validatePassword(password);
+  if (passwordError) {
+    return res.status(400).json({ error: passwordError });
   }
 
   const result = await authService.registerWithEmail(email, password, full_name);
@@ -124,6 +126,11 @@ async function logout(req, res) {
 async function changePassword(req, res) {
   const { current_password: currentPassword, new_password: newPassword } = req.body || {};
 
+  const passwordError = validatePassword(newPassword);
+  if (passwordError) {
+    return res.status(400).json({ error: passwordError });
+  }
+
   const result = await authService.changePassword(req.user.id, currentPassword, newPassword);
 
   if (result.error) {
@@ -146,6 +153,12 @@ async function forgotPassword(req, res) {
 
 async function resetPassword(req, res) {
   const { token, new_password: newPassword } = req.body || {};
+
+  const passwordError = validatePassword(newPassword);
+  if (passwordError) {
+    return res.status(400).json({ error: passwordError });
+  }
+
   const result = await authService.resetPasswordWithToken(token, newPassword);
 
   if (result.error) {
@@ -231,8 +244,11 @@ async function googleCallback(req, res) {
       return res.redirect(`${webOrigin}/login?error=no_email`);
     }
 
-    const user = await authService.findOrCreateGoogleUser(profile);
-    const token = authService.generateToken(user);
+    const oauthResult = await authService.findOrCreateGoogleUser(profile);
+    if (oauthResult.error) {
+      return res.redirect(`${webOrigin}/login?error=account_exists`);
+    }
+    const token = authService.generateToken(oauthResult.user);
 
     res.cookie('session_token', token, getCookieOptions());
     return res.redirect(`${webOrigin}/auth/continue?token=${encodeURIComponent(token)}`);

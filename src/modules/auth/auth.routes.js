@@ -1,6 +1,6 @@
 const express = require('express');
 const { requireAuth } = require('../../middleware/auth');
-const { authEmailRateLimit } = require('../../middleware/rateLimit');
+const { authCredentialRateLimit, authEmailRateLimit } = require('../../middleware/rateLimit');
 const {
   register,
   login,
@@ -23,8 +23,8 @@ function asyncHandler(fn) {
   };
 }
 
-router.post('/register', asyncHandler(register));
-router.post('/login', asyncHandler(login));
+router.post('/register', authCredentialRateLimit, asyncHandler(register));
+router.post('/login', authCredentialRateLimit, asyncHandler(login));
 router.post('/logout', asyncHandler(logout));
 router.post('/verify-email', asyncHandler(verifyEmail));
 router.post('/resend-verification', authEmailRateLimit, asyncHandler(resendVerification));

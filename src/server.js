@@ -2,9 +2,9 @@ require('dotenv').config();
 
 const app = require('./app');
 const db = require('../config/db');
-const { validateProductionEnv } = require('../config/env');
+const { validateEnv } = require('../config/env');
 
-validateProductionEnv();
+validateEnv();
 
 const PORT = process.env.PORT || 4000;
 

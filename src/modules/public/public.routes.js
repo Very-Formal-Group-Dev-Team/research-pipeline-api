@@ -11,6 +11,7 @@ function asyncHandler(fn) {
 
 // Public (no auth required)
 router.get('/stats', asyncHandler(controller.getStats));
+router.get('/config', asyncHandler(controller.getConfig));
 
 module.exports = router;
 

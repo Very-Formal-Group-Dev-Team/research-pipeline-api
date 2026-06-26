@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const db = require('../../../config/db');
+const { validatePassword } = require('../../lib/passwordPolicy');
 const { sendVerificationEmail } = require('./email.service');
 
 const SALT_ROUNDS = 12;
@@ -89,6 +90,13 @@ async function registerWithEmail(email, password, fullName) {
     await sendVerificationEmail(email, token);
   } catch (err) {
     console.error('[auth] failed to send verification email', err.message);
+    if (err.code === 'SMTP_CONFIG_MISSING' && process.env.NODE_ENV !== 'production') {
+      await db.query('UPDATE users SET email_verified = 1, updated_at = NOW() WHERE id = ?', [id]);
+      const user = { id, email, full_name: fullName || null, avatar_url: null };
+      const jwt = generateToken(user);
+      console.warn('[auth] dev mode: registered without SMTP; user auto-verified', { email });
+      return { user, token: jwt, message: 'Registration successful.' };
+    }
     return { error: getVerificationEmailErrorMessage(err) };
   }
 
@@ -202,32 +210,54 @@ async function loginWithEmail(email, password, { rememberMe = false } = {}) {
 }
 
 async function findOrCreateGoogleUser(profile) {
-  const { rows } = await db.query('SELECT id, email, full_name, avatar_url, auth_provider FROM users WHERE email = ? LIMIT 1', [profile.email]);
+  const { rows } = await db.query(
+    'SELECT id, email, full_name, avatar_url, auth_provider, password_hash FROM users WHERE email = ? LIMIT 1',
+    [profile.email],
+  );
 
   if (rows.length > 0) {
     const user = rows[0];
+    if (user.auth_provider !== 'google' && user.password_hash) {
+      return {
+        error: 'An account with this email already exists. Sign in with your password first.',
+      };
+    }
     if (user.auth_provider !== 'google') {
       await db.query(
         'UPDATE users SET auth_provider = ?, avatar_url = COALESCE(avatar_url, ?), updated_at = NOW() WHERE id = ?',
-        ['google', profile.picture || null, user.id]
+        ['google', profile.picture || null, user.id],
       );
       console.log('[auth] linked existing user to google', { id: user.id });
     } else {
       console.log('[auth] google user already exists', { id: user.id });
     }
-    return { id: user.id, email: user.email, full_name: user.full_name || profile.name, avatar_url: user.avatar_url || profile.picture };
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        full_name: user.full_name || profile.name,
+        avatar_url: user.avatar_url || profile.picture,
+      },
+    };
   }
 
   const id = crypto.randomUUID();
   await db.query(
-    `INSERT INTO users (id, email, full_name, avatar_url, auth_provider, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'google', 1, NOW(), NOW())`,
-    [id, profile.email, profile.name || null, profile.picture || null]
+    `INSERT INTO users (id, email, full_name, avatar_url, auth_provider, status, email_verified, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'google', 1, 1, NOW(), NOW())`,
+    [id, profile.email, profile.name || null, profile.picture || null],
   );
 
   console.log('[auth] created new google user', { id, email: profile.email });
 
-  return { id, email: profile.email, full_name: profile.name || null, avatar_url: profile.picture || null };
+  return {
+    user: {
+      id,
+      email: profile.email,
+      full_name: profile.name || null,
+      avatar_url: profile.picture || null,
+    },
+  };
 }
 
 async function getUserById(userId) {
@@ -303,8 +333,13 @@ async function resetPasswordWithToken(token, newPassword) {
     return { error: 'Reset token is required' };
   }
 
-  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
-    return { error: 'Password must be at least 6 characters' };
+  if (!newPassword || typeof newPassword !== 'string') {
+    return { error: 'Password is required' };
+  }
+
+  const passwordError = validatePassword(newPassword);
+  if (passwordError) {
+    return { error: passwordError };
   }
 
   const { rows } = await db.query(
@@ -372,8 +407,9 @@ async function changePassword(userId, currentPassword, newPassword) {
     return { error: 'Current password and new password are required' };
   }
 
-  if (typeof newPassword !== 'string' || newPassword.length < 6) {
-    return { error: 'New password must be at least 6 characters' };
+  const passwordError = validatePassword(newPassword);
+  if (passwordError) {
+    return { error: passwordError };
   }
 
   const valid = await bcrypt.compare(currentPassword, user.password_hash);
