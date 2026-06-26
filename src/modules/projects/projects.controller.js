@@ -312,11 +312,16 @@ async function getByCode(req, res) {
       return res.status(404).json({ error: 'Project not found' });
     }
 
-    project.keywords = typeof project.keywords === 'string'
-      ? JSON.parse(project.keywords)
-      : (project.keywords || []);
+    const canView = await userCanViewProject(req.user.id, project.id);
+    if (!canView) {
+      return res.status(403).json({ error: 'You do not have access to this project' });
+    }
 
-    return res.json(project);
+    return res.json({
+      id: project.id,
+      project_code: project.project_code,
+      title: project.title,
+    });
   } catch (err) {
     console.error('projects.controller – getByCode error:', err);
     return res.status(500).json({ error: 'Failed to fetch project by code' });

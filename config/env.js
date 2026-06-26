@@ -74,21 +74,26 @@ const uploadBase = resolveUploadBase();
 
 const trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
 
-function validateProductionEnv() {
-  if (!isProduction) return;
-
-  const required = ['DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'JWT_SECRET'];
-  const missing = required.filter((name) => {
-    const value = process.env[name];
-    return typeof value !== 'string' || value.trim().length === 0;
-  });
-
-  if (missing.length > 0) {
-    throw new Error(`Missing required environment variables in production: ${missing.join(', ')}`);
+function validateEnv() {
+  const jwtSecret = process.env.JWT_SECRET;
+  if (typeof jwtSecret !== 'string' || jwtSecret.trim().length === 0) {
+    throw new Error('JWT_SECRET must be set. Add it to your .env file.');
   }
 
-  if (process.env.JWT_SECRET.trim().length < 32) {
-    throw new Error('JWT_SECRET must be at least 32 characters in production');
+  if (isProduction) {
+    const required = ['DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
+    const missing = required.filter((name) => {
+      const value = process.env[name];
+      return typeof value !== 'string' || value.trim().length === 0;
+    });
+
+    if (missing.length > 0) {
+      throw new Error(`Missing required environment variables in production: ${missing.join(', ')}`);
+    }
+
+    if (jwtSecret.trim().length < 32) {
+      throw new Error('JWT_SECRET must be at least 32 characters in production');
+    }
   }
 }
 
@@ -142,5 +147,5 @@ module.exports = {
   whisperPythonLabel,
   whisperPythonPath,
   whisperPythonReady,
-  validateProductionEnv,
+  validateEnv,
 };

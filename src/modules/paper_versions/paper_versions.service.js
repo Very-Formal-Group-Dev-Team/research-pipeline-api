@@ -70,28 +70,45 @@ async function notifyStudentMembersOfPaperCommit({
 
 /** Insert a new paper version row. */
 async function createPaperVersion({ projectId, fileUrl, fileName, fileSize, mimeType, commitMessage, tag, uploadedBy, isGenerated }) {
-  const versionNumber = await getNextVersionNumber(projectId);
+  const connection = await db.pool.getConnection();
+  let versionNumber;
 
-  await db.query(
-    `INSERT INTO paper_versions
-       (project_id, version_number, file_url, file_name, file_size, mime_type,
-        commit_message, tag, uploaded_by, is_generated)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      projectId,
-      versionNumber,
-      fileUrl,
-      fileName,
-      fileSize,
-      mimeType || null,
-      commitMessage,
-      tag || null,
-      uploadedBy,
-      isGenerated ? 1 : 0,
-    ],
-  );
+  try {
+    await connection.beginTransaction();
 
-  await touchProjectUpdatedAt(projectId);
+    const [maxRows] = await connection.execute(
+      'SELECT COALESCE(MAX(version_number), 0) AS max_v FROM paper_versions WHERE project_id = ? FOR UPDATE',
+      [projectId],
+    );
+    versionNumber = (maxRows[0]?.max_v ?? 0) + 1;
+
+    await connection.execute(
+      `INSERT INTO paper_versions
+         (project_id, version_number, file_url, file_name, file_size, mime_type,
+          commit_message, tag, uploaded_by, is_generated)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        projectId,
+        versionNumber,
+        fileUrl,
+        fileName,
+        fileSize,
+        mimeType || null,
+        commitMessage,
+        tag || null,
+        uploadedBy,
+        isGenerated ? 1 : 0,
+      ],
+    );
+
+    await connection.execute('UPDATE projects SET updated_at = NOW() WHERE id = ?', [projectId]);
+    await connection.commit();
+  } catch (err) {
+    await connection.rollback();
+    throw err;
+  } finally {
+    connection.release();
+  }
 
   await notifyStudentMembersOfPaperCommit({
     projectId,

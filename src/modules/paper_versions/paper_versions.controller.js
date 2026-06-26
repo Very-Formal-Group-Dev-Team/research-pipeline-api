@@ -47,7 +47,7 @@ async function upload(req, res) {
   }
 
   if (!req.file) {
-    return res.status(400).json({ error: 'A .docx file is required' });
+    return res.status(400).json({ error: 'A PDF, DOC, or DOCX file is required' });
   }
 
   const { commitMessage } = req.body;

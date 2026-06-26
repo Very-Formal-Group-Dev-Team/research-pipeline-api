@@ -1,4 +1,5 @@
 const db = require('../../../config/db');
+const { getJitsiBaseUrl } = require('../../lib/jitsi');
 
 function toCount(value) {
   if (value == null) return 0;
@@ -24,7 +25,14 @@ async function getPublicStats() {
   };
 }
 
+async function getPublicConfig() {
+  return {
+    jitsiBaseUrl: getJitsiBaseUrl(),
+  };
+}
+
 module.exports = {
   getPublicStats,
+  getPublicConfig,
 };
 

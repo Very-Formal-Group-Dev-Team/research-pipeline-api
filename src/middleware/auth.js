@@ -1,6 +1,13 @@
 const jwt = require('jsonwebtoken');
 const { getRoleByUserId } = require('../modules/users/users.service');
 
+function isDevAuthBypassAllowed() {
+  return (
+    process.env.NODE_ENV !== 'production'
+    && String(process.env.ALLOW_DEV_AUTH_BYPASS || '').trim().toLowerCase() === 'true'
+  );
+}
+
 function parseCookies(cookieHeader = '') {
   return cookieHeader
     .split(';')
@@ -36,7 +43,7 @@ function extractUserFromToken(token) {
     }
   }
 
-  if (process.env.NODE_ENV !== 'production' && /^[0-9a-fA-F-]{16,}$/.test(token)) {
+  if (isDevAuthBypassAllowed() && /^[0-9a-fA-F-]{16,}$/.test(token)) {
     return { id: token };
   }
 
@@ -92,7 +99,7 @@ function requireAuth(req, res, next) {
       }
     }
 
-    if (process.env.NODE_ENV !== 'production') {
+    if (isDevAuthBypassAllowed()) {
       const devUserId = req.headers['x-user-id'];
       if (typeof devUserId === 'string' && devUserId.trim()) {
         req.user = { id: devUserId.trim() };
