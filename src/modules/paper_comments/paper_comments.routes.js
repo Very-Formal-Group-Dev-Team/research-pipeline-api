@@ -16,5 +16,6 @@ router.patch('/:commentId', asyncHandler(controller.update));
 router.post('/:commentId/resolve', asyncHandler(controller.resolve));
 router.post('/:commentId/request-revision', asyncHandler(controller.requestRevision));
 router.post('/:commentId/reopen', asyncHandler(controller.reopen));
+router.delete('/:commentId', asyncHandler(controller.remove));
 
 module.exports = router;

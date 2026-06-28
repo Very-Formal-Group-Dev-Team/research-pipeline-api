@@ -9,16 +9,31 @@ const { remapAnchor, computeTouchedByDiff, buildTextQuoteSelector, resolveAnchor
 const BODY_MIN_LENGTH = 1;
 const BODY_MAX_LENGTH = 5000;
 
-function mapCommentRow(row, extras = {}) {
+function isAdviserAuthorRole(role) {
+  return role === 'adviser';
+}
+
+function isStudentAuthorRole(role) {
+  return role === 'leader' || role === 'member';
+}
+
+function parseAnchorFromRow(row) {
   if (!row) return null;
-  let anchor = row.anchor_json;
+  let anchor = row.anchor ?? row.anchor_json;
+  if (!anchor) return null;
   if (typeof anchor === 'string') {
     try {
       anchor = JSON.parse(anchor);
     } catch {
-      anchor = null;
+      return null;
     }
   }
+  return anchor;
+}
+
+function mapCommentRow(row, extras = {}) {
+  if (!row) return null;
+  const anchor = parseAnchorFromRow(row);
 
   return {
     id: row.id,
@@ -41,6 +56,8 @@ function mapCommentRow(row, extras = {}) {
     revision_requested_at: row.revision_requested_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    edited_at: row.edited_at ?? null,
+    visibility: row.visibility ?? 'adviser',
     mapped_start: extras.mapped_start ?? null,
     mapped_end: extras.mapped_end ?? null,
     anchor_status: extras.anchor_status ?? null,
@@ -113,12 +130,13 @@ async function enrichCommentForVersion(comment, targetVersion, plainTextCache) {
     plainTextCache.set(cacheKey, await getVersionPlainTextCached(targetVersion));
   }
   const targetText = plainTextCache.get(cacheKey);
+  const anchor = parseAnchorFromRow(comment);
 
-  if (!targetText || !comment.anchor) {
+  if (!targetText || !anchor) {
     return mapCommentRow(comment, { anchor_status: 'orphaned', touched_by_diff: false });
   }
 
-  const remapped = remapAnchor(targetText, comment.anchor);
+  const remapped = remapAnchor(targetText, anchor);
 
   let touchedByDiff = false;
   if (comment.anchor_version_id !== targetVersion.id && remapped.mapped_start != null) {
@@ -133,7 +151,7 @@ async function enrichCommentForVersion(comment, targetVersion, plainTextCache) {
     const anchorText = plainTextCache.get(anchorKey);
     if (anchorText) {
       touchedByDiff = computeTouchedByDiff(
-        comment.anchor.exact,
+        anchor.exact,
         anchorText,
         targetText,
       );
@@ -162,11 +180,21 @@ async function listComments(projectId, userId, { versionId, status } = {}) {
     return { error: 'Version not found', status: 404 };
   }
 
-  const params = [projectId, versionId];
+  const params = [versionId, projectId];
   let statusClause = '';
   if (status && ['open', 'resolved', 'needs_revision'].includes(status)) {
     statusClause = ' AND pc.status = ?';
     params.push(status);
+  }
+
+  const isMember = await isAcceptedProjectMember(projectId, userId);
+  const isAdviser = await isAcceptedAdviser(projectId, userId);
+  const isStudent = await isAcceptedStudentMember(projectId, userId);
+  const isCoordinator = !isMember && (await coordinatorService.coordinatorCanViewProject(userId, projectId));
+
+  let visibilityClause = '';
+  if (isAdviser && !isStudent && !isCoordinator) {
+    visibilityClause = " AND pc.visibility = 'adviser'";
   }
 
   const { rows } = await db.query(
@@ -182,7 +210,7 @@ async function listComments(projectId, userId, { versionId, status } = {}) {
       AND pm.user_id = pc.author_id
       AND pm.status = 'accepted'
      WHERE pc.project_id = ?
-       AND pv.version_number <= target_pv.version_number${statusClause}
+       AND pv.version_number <= target_pv.version_number${statusClause}${visibilityClause}
      ORDER BY pc.created_at ASC`,
     params,
   );
@@ -331,8 +359,8 @@ async function createComment(projectId, userId, { versionId, anchor, body, paren
 
   await db.query(
     `INSERT INTO paper_comments
-       (id, project_id, anchor_version_id, review_request_id, parent_id, author_id, body, anchor_json, plain_text_hash, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
+       (id, project_id, anchor_version_id, review_request_id, parent_id, author_id, body, anchor_json, plain_text_hash, status, visibility)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 'adviser')`,
     [
       commentId,
       projectId,
@@ -394,25 +422,28 @@ async function createComment(projectId, userId, { versionId, anchor, body, paren
         ),
       );
     } else if (isStudent) {
-      const adviserIds = await getAdviserIds(projectId);
-      const recipients = adviserIds.filter((id) => id !== userId);
+      const insertedVisibility = rows[0]?.visibility ?? 'adviser';
+      if (insertedVisibility === 'adviser') {
+        const adviserIds = await getAdviserIds(projectId);
+        const recipients = adviserIds.filter((id) => id !== userId);
 
-      await Promise.all(
-        recipients.map((recipientId) =>
-          notificationsService.createNotification({
-            userId: recipientId,
-            type: 'comment_added',
-            title: 'New student comment',
-            message: `${authorName} left a comment on "${projectTitle}" (version ${version.version_number}).`,
-            metadata: {
-              projectId,
-              paperVersionId: versionId,
-              versionNumber: version.version_number,
-              commentId,
-            },
-          }),
-        ),
-      );
+        await Promise.all(
+          recipients.map((recipientId) =>
+            notificationsService.createNotification({
+              userId: recipientId,
+              type: 'comment_added',
+              title: 'New student comment',
+              message: `${authorName} left a comment on "${projectTitle}" (version ${version.version_number}).`,
+              metadata: {
+                projectId,
+                paperVersionId: versionId,
+                versionNumber: version.version_number,
+                commentId,
+              },
+            }),
+          ),
+        );
+      }
     }
   }
 
@@ -443,15 +474,24 @@ async function resolveComment(projectId, commentId, userId) {
     return { error: 'You are not a member of this project', status: 403 };
   }
 
-  const isAdviser = await isAcceptedAdviser(projectId, userId);
   const isStudent = await isAcceptedStudentMember(projectId, userId);
-  if (!isAdviser && !isStudent) {
-    return { error: 'Only project members can resolve comments', status: 403 };
+  if (!isStudent) {
+    return { error: 'Only students can resolve comments', status: 403 };
   }
 
   const comment = await getCommentById(projectId, commentId);
   if (!comment) {
     return { error: 'Comment not found', status: 404 };
+  }
+
+  const isAdviserFeedback = isAdviserAuthorRole(comment.author_role);
+  const isStudentFeedback = isStudentAuthorRole(comment.author_role);
+  if (!isAdviserFeedback && !isStudentFeedback) {
+    return { error: 'This comment cannot be resolved', status: 403 };
+  }
+
+  if (comment.parent_id) {
+    return { error: 'Only parent comments can be resolved', status: 400 };
   }
 
   if (comment.status === 'resolved') {
@@ -469,29 +509,50 @@ async function resolveComment(projectId, commentId, userId) {
   const updated = await getCommentById(projectId, commentId);
 
   if (isStudent) {
-    const adviserIds = await getAdviserIds(projectId);
-    const { rows: projectRows } = await db.query(
-      'SELECT title FROM projects WHERE id = ? LIMIT 1',
-      [projectId],
-    );
-    const { rows: userRows } = await db.query(
-      'SELECT full_name FROM users WHERE id = ? LIMIT 1',
-      [userId],
-    );
-    const projectTitle = projectRows[0]?.title || 'your project';
-    const resolverName = userRows[0]?.full_name || 'A student';
+    if (isAdviserFeedback) {
+      const adviserIds = await getAdviserIds(projectId);
+      const { rows: projectRows } = await db.query(
+        'SELECT title FROM projects WHERE id = ? LIMIT 1',
+        [projectId],
+      );
+      const { rows: userRows } = await db.query(
+        'SELECT full_name FROM users WHERE id = ? LIMIT 1',
+        [userId],
+      );
+      const projectTitle = projectRows[0]?.title || 'your project';
+      const resolverName = userRows[0]?.full_name || 'A student';
 
-    await Promise.all(
-      adviserIds.filter((id) => id !== userId).map((adviserId) =>
-        notificationsService.createNotification({
-          userId: adviserId,
-          type: 'comment_resolved',
-          title: 'Comment resolved',
-          message: `${resolverName} resolved a comment on "${projectTitle}".`,
-          metadata: { projectId, commentId, paperVersionId: comment.anchor_version_id },
-        }),
-      ),
-    );
+      await Promise.all(
+        adviserIds.filter((id) => id !== userId).map((adviserId) =>
+          notificationsService.createNotification({
+            userId: adviserId,
+            type: 'comment_resolved',
+            title: 'Comment resolved',
+            message: `${resolverName} resolved a comment on "${projectTitle}".`,
+            metadata: { projectId, commentId, paperVersionId: comment.anchor_version_id },
+          }),
+        ),
+      );
+    } else if (isStudentFeedback && comment.author_id !== userId) {
+      const { rows: projectRows } = await db.query(
+        'SELECT title FROM projects WHERE id = ? LIMIT 1',
+        [projectId],
+      );
+      const { rows: userRows } = await db.query(
+        'SELECT full_name FROM users WHERE id = ? LIMIT 1',
+        [userId],
+      );
+      const projectTitle = projectRows[0]?.title || 'your project';
+      const resolverName = userRows[0]?.full_name || 'A teammate';
+
+      await notificationsService.createNotification({
+        userId: comment.author_id,
+        type: 'comment_resolved',
+        title: 'Comment resolved',
+        message: `${resolverName} resolved your comment on "${projectTitle}".`,
+        metadata: { projectId, commentId, paperVersionId: comment.anchor_version_id },
+      });
+    }
   }
 
   return { data: mapCommentRow(updated) };
@@ -505,6 +566,18 @@ async function requestRevision(projectId, commentId, userId) {
   const comment = await getCommentById(projectId, commentId);
   if (!comment) {
     return { error: 'Comment not found', status: 404 };
+  }
+
+  if (!isAdviserAuthorRole(comment.author_role)) {
+    return { error: 'Revision can only be requested on adviser feedback', status: 403 };
+  }
+
+  if (comment.parent_id) {
+    return { error: 'Only parent comments can have revision requested', status: 400 };
+  }
+
+  if (comment.status !== 'open') {
+    return { error: 'Revision can only be requested on open comments', status: 400 };
   }
 
   await db.query(
@@ -546,13 +619,34 @@ async function requestRevision(projectId, commentId, userId) {
 }
 
 async function reopenComment(projectId, commentId, userId) {
-  if (!(await userCanView(projectId, userId))) {
-    return { error: 'You are not a member of this project', status: 403 };
-  }
-
   const comment = await getCommentById(projectId, commentId);
   if (!comment) {
     return { error: 'Comment not found', status: 404 };
+  }
+
+  const isAdviser = await isAcceptedAdviser(projectId, userId);
+  const isStudent = await isAcceptedStudentMember(projectId, userId);
+  const isAdviserFeedback = isAdviserAuthorRole(comment.author_role);
+  const isStudentFeedback = isStudentAuthorRole(comment.author_role);
+
+  if (isAdviserFeedback) {
+    if (!isAdviser) {
+      return { error: 'Only advisers can reopen adviser feedback', status: 403 };
+    }
+  } else if (isStudentFeedback) {
+    if (!isStudent) {
+      return { error: 'Only students can reopen team comments', status: 403 };
+    }
+  } else {
+    return { error: 'This comment cannot be reopened', status: 403 };
+  }
+
+  if (comment.parent_id) {
+    return { error: 'Only parent comments can be reopened', status: 400 };
+  }
+
+  if (comment.status !== 'resolved' && comment.status !== 'needs_revision') {
+    return { error: 'Only resolved or revision-requested comments can be reopened', status: 400 };
   }
 
   await db.query(
@@ -567,28 +661,93 @@ async function reopenComment(projectId, commentId, userId) {
   return { data: mapCommentRow(updated) };
 }
 
-async function updateCommentBody(projectId, commentId, userId, body) {
+async function deleteComment(projectId, commentId, userId) {
+  if (!(await isAcceptedProjectMember(projectId, userId))) {
+    return { error: 'Only project members can delete comments', status: 403 };
+  }
+
   const comment = await getCommentById(projectId, commentId);
   if (!comment) {
     return { error: 'Comment not found', status: 404 };
   }
 
   if (comment.author_id !== userId) {
-    return { error: 'Only the author can edit this comment', status: 403 };
+    return { error: 'Only the author can delete this comment', status: 403 };
   }
 
-  const createdAt = new Date(comment.created_at).getTime();
-  const fifteenMinutes = 15 * 60 * 1000;
-  if (Date.now() - createdAt > fifteenMinutes) {
-    return { error: 'Comments can only be edited within 15 minutes of posting', status: 403 };
+  await notificationsService.deleteNotificationsByCommentId({ commentId });
+  await db.query('DELETE FROM paper_comments WHERE id = ? AND project_id = ?', [commentId, projectId]);
+  return { data: { success: true } };
+}
+
+async function updateComment(projectId, commentId, userId, { body, visibility } = {}) {
+  if (!(await isAcceptedProjectMember(projectId, userId))) {
+    return { error: 'Only project members can update comments', status: 403 };
   }
 
-  const trimmedBody = String(body || '').trim();
-  if (trimmedBody.length < BODY_MIN_LENGTH || trimmedBody.length > BODY_MAX_LENGTH) {
-    return { error: `Comment must be between ${BODY_MIN_LENGTH} and ${BODY_MAX_LENGTH} characters`, status: 400 };
+  const comment = await getCommentById(projectId, commentId);
+  if (!comment) {
+    return { error: 'Comment not found', status: 404 };
   }
 
-  await db.query('UPDATE paper_comments SET body = ? WHERE id = ?', [trimmedBody, commentId]);
+  if (comment.author_id !== userId) {
+    return { error: 'Only the author can update this comment', status: 403 };
+  }
+
+  const hasBody = body !== undefined && body !== null;
+  const hasVisibility = visibility !== undefined && visibility !== null;
+
+  if (!hasBody && !hasVisibility) {
+    return { error: 'No updates provided', status: 400 };
+  }
+
+  if (hasBody) {
+    const trimmedBody = String(body).trim();
+    if (trimmedBody.length < BODY_MIN_LENGTH || trimmedBody.length > BODY_MAX_LENGTH) {
+      return { error: `Comment must be between ${BODY_MIN_LENGTH} and ${BODY_MAX_LENGTH} characters`, status: 400 };
+    }
+
+    if (trimmedBody !== comment.body) {
+      await db.query(
+        'UPDATE paper_comments SET body = ?, edited_at = NOW() WHERE id = ?',
+        [trimmedBody, commentId],
+      );
+    }
+  }
+
+  if (hasVisibility) {
+    if (!(await isAcceptedStudentMember(projectId, userId))) {
+      return { error: 'Only students can change comment visibility', status: 403 };
+    }
+
+    if (!isStudentAuthorRole(comment.author_role)) {
+      return { error: 'Only student-authored comments can be hidden from the adviser', status: 403 };
+    }
+
+    if (visibility !== 'adviser' && visibility !== 'team') {
+      return { error: 'visibility must be adviser or team', status: 400 };
+    }
+
+    const previousVisibility = comment.visibility ?? 'adviser';
+    await db.query('UPDATE paper_comments SET visibility = ? WHERE id = ?', [visibility, commentId]);
+
+    if (
+      visibility === 'team' &&
+      previousVisibility !== 'team' &&
+      !comment.parent_id &&
+      isStudentAuthorRole(comment.author_role)
+    ) {
+      const adviserIds = await getAdviserIds(projectId);
+      if (adviserIds.length) {
+        await notificationsService.deleteNotificationsByCommentId({
+          commentId,
+          userIds: adviserIds,
+          types: ['comment_added'],
+        });
+      }
+    }
+  }
+
   const updated = await getCommentById(projectId, commentId);
   return { data: mapCommentRow(updated) };
 }
@@ -608,13 +767,18 @@ async function linkCommentsToReviewOnComplete(projectId, reviewRequestId, paperV
 async function getOpenCommentCountsForReview(projectId, paperVersionId) {
   const { rows } = await db.query(
     `SELECT
-       SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open_count,
-       SUM(CASE WHEN status = 'needs_revision' THEN 1 ELSE 0 END) AS needs_revision_count,
-       SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) AS resolved_count
-     FROM paper_comments
-     WHERE project_id = ?
-       AND anchor_version_id = ?
-       AND parent_id IS NULL`,
+       SUM(CASE WHEN pc.status = 'open' THEN 1 ELSE 0 END) AS open_count,
+       SUM(CASE WHEN pc.status = 'needs_revision' THEN 1 ELSE 0 END) AS needs_revision_count,
+       SUM(CASE WHEN pc.status = 'resolved' THEN 1 ELSE 0 END) AS resolved_count
+     FROM paper_comments pc
+     JOIN project_members pm
+       ON pm.project_id = pc.project_id
+      AND pm.user_id = pc.author_id
+      AND pm.status = 'accepted'
+      AND pm.role = 'adviser'
+     WHERE pc.project_id = ?
+       AND pc.anchor_version_id = ?
+       AND pc.parent_id IS NULL`,
     [projectId, paperVersionId],
   );
   const row = rows[0] || {};
@@ -632,7 +796,8 @@ module.exports = {
   resolveComment,
   requestRevision,
   reopenComment,
-  updateCommentBody,
+  updateComment,
+  deleteComment,
   linkCommentsToReviewOnComplete,
   getOpenCommentCountsForReview,
   buildTextQuoteSelector,

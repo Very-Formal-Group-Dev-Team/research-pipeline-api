@@ -328,6 +328,37 @@ async function deleteJoinRequestNotifications({ userId, projectId, memberId, con
   await queryRunner.query(sql, params);
 }
 
+/** Remove manuscript comment alerts (e.g. when a student hides a comment from advisers). */
+async function deleteNotificationsByCommentId({
+  commentId,
+  userIds = null,
+  types = null,
+  conn = null,
+}) {
+  if (!commentId) return;
+
+  let sql = `DELETE FROM notifications
+     WHERE JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.commentId')) = ?`;
+  const params = [commentId];
+
+  if (Array.isArray(userIds) && userIds.length > 0) {
+    sql += ` AND user_id IN (${userIds.map(() => '?').join(', ')})`;
+    params.push(...userIds);
+  }
+
+  if (Array.isArray(types) && types.length > 0) {
+    sql += ` AND type IN (${types.map(() => '?').join(', ')})`;
+    params.push(...types);
+  }
+
+  if (conn) {
+    await conn.execute(sql, params);
+    return;
+  }
+
+  await db.query(sql, params);
+}
+
 module.exports = {
   NOTIFICATION_TYPES,
   createNotification,
@@ -340,4 +371,5 @@ module.exports = {
   markAllNotificationsAsRead,
   deleteProjectInvitationNotifications,
   deleteJoinRequestNotifications,
+  deleteNotificationsByCommentId,
 };

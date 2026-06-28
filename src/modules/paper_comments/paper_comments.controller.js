@@ -42,8 +42,11 @@ async function create(req, res) {
 
 async function update(req, res) {
   const { id: projectId, commentId } = req.params;
-  const { body } = req.body || {};
-  const result = await paperCommentsService.updateCommentBody(projectId, commentId, req.user.id, body);
+  const { body, visibility } = req.body || {};
+  const result = await paperCommentsService.updateComment(projectId, commentId, req.user.id, {
+    body,
+    visibility,
+  });
   if (result.error) {
     return res.status(result.status || 400).json({ error: result.error });
   }
@@ -77,6 +80,15 @@ async function reopen(req, res) {
   return res.json(result.data);
 }
 
+async function remove(req, res) {
+  const { id: projectId, commentId } = req.params;
+  const result = await paperCommentsService.deleteComment(projectId, commentId, req.user.id);
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
 module.exports = {
   list,
   summary,
@@ -85,4 +97,5 @@ module.exports = {
   resolve,
   requestRevision,
   reopen,
+  remove,
 };
