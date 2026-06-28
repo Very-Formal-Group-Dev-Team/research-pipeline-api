@@ -3,6 +3,7 @@ const fs = require('fs');
 const db = require('../../../config/db');
 const { uploadBase } = require('../../../config/env');
 const notificationsService = require('../notifications/notifications.service');
+const { logAuditEntry } = require('../audit/audit.service');
 
 const FILES_DIR = path.join(uploadBase, 'files');
 
@@ -1281,6 +1282,19 @@ async function updateProjectStatus(projectId, status, userId) {
     'UPDATE projects SET status = ?, updated_at = NOW() WHERE id = ?',
     [mapped, projectId]
   );
+
+  await logAuditEntry({
+    action: 'project.stage_changed',
+    actorUserId: userId,
+    targetType: 'project',
+    targetId: projectId,
+    institutionId: project.institution_id || null,
+    metadata: {
+      previousStage: currentMapped,
+      newStage: mapped,
+      projectTitle: project.title,
+    },
+  });
 
   await notifyProjectMembersStageUpdated({
     projectId,

@@ -1,5 +1,6 @@
 const db = require('../../../config/db');
 const notificationsService = require('../notifications/notifications.service');
+const { logAuditEntry } = require('../audit/audit.service');
 
 /** Return the next version number for a project (max + 1, or 1 if none). */
 async function getNextVersionNumber(projectId) {
@@ -116,6 +117,25 @@ async function createPaperVersion({ projectId, fileUrl, fileName, fileSize, mime
     commitMessage,
     uploadedBy,
     fileName,
+  });
+
+  const { rows: projectRows } = await db.query(
+    'SELECT institution_id, title FROM projects WHERE id = ? LIMIT 1',
+    [projectId],
+  );
+
+  await logAuditEntry({
+    action: 'paper_version.uploaded',
+    actorUserId: uploadedBy,
+    targetType: 'project',
+    targetId: projectId,
+    institutionId: projectRows[0]?.institution_id || null,
+    metadata: {
+      versionNumber,
+      fileName,
+      commitMessage,
+      projectTitle: projectRows[0]?.title || null,
+    },
   });
 
   return versionNumber;

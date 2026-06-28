@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const db = require('../../../config/db');
 const { validatePassword } = require('../../lib/passwordPolicy');
 const { sendVerificationEmail } = require('./email.service');
+const { logAuditEntry } = require('../audit/audit.service');
 
 const SALT_ROUNDS = 12;
 const VERIFICATION_EXPIRY_HOURS = 24;
@@ -176,7 +177,7 @@ async function resendVerification(email) {
 
 async function loginWithEmail(email, password, { rememberMe = false } = {}) {
   const { rows } = await db.query(
-    'SELECT id, email, full_name, avatar_url, password_hash, auth_provider, email_verified FROM users WHERE email = ? LIMIT 1',
+    'SELECT id, email, full_name, avatar_url, password_hash, auth_provider, email_verified, status FROM users WHERE email = ? LIMIT 1',
     [email]
   );
 
@@ -185,6 +186,10 @@ async function loginWithEmail(email, password, { rememberMe = false } = {}) {
   }
 
   const user = rows[0];
+
+  if (Number(user.status) === 0) {
+    return { error: 'Account deactivated. Contact your administrator.' };
+  }
 
   if (user.auth_provider !== 'email' || !user.password_hash) {
     return { error: 'This account uses Google sign-in' };
@@ -203,6 +208,14 @@ async function loginWithEmail(email, password, { rememberMe = false } = {}) {
 
   const token = generateToken(user, { rememberMe });
 
+  await logAuditEntry({
+    action: 'user.login',
+    actorUserId: user.id,
+    targetType: 'user',
+    targetId: user.id,
+    metadata: { method: 'email' },
+  });
+
   return {
     user: { id: user.id, email: user.email, full_name: user.full_name, avatar_url: user.avatar_url },
     token,
@@ -211,12 +224,15 @@ async function loginWithEmail(email, password, { rememberMe = false } = {}) {
 
 async function findOrCreateGoogleUser(profile) {
   const { rows } = await db.query(
-    'SELECT id, email, full_name, avatar_url, auth_provider, password_hash FROM users WHERE email = ? LIMIT 1',
+    'SELECT id, email, full_name, avatar_url, auth_provider, password_hash, status FROM users WHERE email = ? LIMIT 1',
     [profile.email],
   );
 
   if (rows.length > 0) {
     const user = rows[0];
+    if (Number(user.status) === 0) {
+      return { error: 'Account deactivated. Contact your administrator.' };
+    }
     if (user.auth_provider !== 'google' && user.password_hash) {
       return {
         error: 'An account with this email already exists. Sign in with your password first.',

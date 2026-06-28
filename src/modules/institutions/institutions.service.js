@@ -4,24 +4,18 @@ const {
 } = require('../../constants/institutions');
 
 async function ensureRegisteredInstitutions() {
-  for (const institution of REGISTERED_INSTITUTIONS) {
-    const { rows } = await db.query(
-      'SELECT id FROM institutions WHERE code = ? LIMIT 1',
-      [institution.code],
-    );
+  const { rows: countRows } = await db.query('SELECT COUNT(*) AS total FROM institutions');
+  const total = Number(countRows[0]?.total) || 0;
+  if (total > 0) {
+    return;
+  }
 
-    if (!rows[0]) {
-      await db.query(
-        `INSERT INTO institutions (id, name, code, is_active, created_at, updated_at)
-         VALUES (UUID(), ?, ?, 1, NOW(), NOW())`,
-        [institution.name, institution.code],
-      );
-    } else {
-      await db.query(
-        'UPDATE institutions SET name = ?, updated_at = NOW() WHERE code = ?',
-        [institution.name, institution.code],
-      );
-    }
+  for (const institution of REGISTERED_INSTITUTIONS) {
+    await db.query(
+      `INSERT INTO institutions (id, name, code, is_active, created_at, updated_at)
+       VALUES (UUID(), ?, ?, 1, NOW(), NOW())`,
+      [institution.name, institution.code],
+    );
   }
 }
 
@@ -74,7 +68,6 @@ async function isRegisteredInstitutionId(institutionId) {
 }
 
 async function listAllInstitutions() {
-  await ensureRegisteredInstitutions();
   const { rows } = await db.query(
     `SELECT id, name, code, is_active, created_at, updated_at
      FROM institutions
