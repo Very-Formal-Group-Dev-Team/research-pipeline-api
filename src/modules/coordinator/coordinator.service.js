@@ -2358,6 +2358,7 @@ async function getProjectsByInstitution(institutionId) {
     `SELECT DISTINCT
        p.id, p.title, p.project_code, p.status, p.project_type, p.created_at, p.updated_at,
        p.course_id, p.course AS course_label,
+       p.section_id, p.section,
        c.course_name, c.code AS course_code
      FROM projects p
      INNER JOIN project_members pm
@@ -2431,6 +2432,27 @@ async function getProjectsByAdviserInInstitution(institutionId) {
   return Array.from(adviserMap.values());
 }
 
+const institutionsService = require('../institutions/institutions.service');
+
+async function listSections(institutionId) {
+  const result = await institutionsService.getSectionsByInstitutionId(institutionId, {
+    activeOnly: false,
+  });
+  return result.data || [];
+}
+
+async function createSection(institutionId, payload) {
+  return institutionsService.createInstitutionSection(institutionId, payload);
+}
+
+async function updateSection(institutionId, sectionId, payload) {
+  return institutionsService.updateInstitutionSection(sectionId, institutionId, payload);
+}
+
+async function deleteSection(institutionId, sectionId) {
+  return institutionsService.deleteInstitutionSection(sectionId, institutionId);
+}
+
 module.exports = {
   getInstitutionByCoordinator,
   getInstitutionById,
@@ -2466,4 +2488,8 @@ module.exports = {
   getProjectsByAdviserInInstitution,
   getProjectsForCourseInInstitution,
   coordinatorCanViewProject,
+  listSections,
+  createSection,
+  updateSection,
+  deleteSection,
 };

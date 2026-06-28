@@ -128,6 +128,7 @@ async function create(req, res) {
       course,
       courseId,
       section,
+      sectionId,
     } = req.body;
 
     if (!title || !title.trim()) {
@@ -161,6 +162,7 @@ async function create(req, res) {
       course: course || null,
       courseId: courseId || null,
       section: section || null,
+      sectionId: sectionId || null,
       documentReference: null,
       createdBy: req.user.id,
     });
@@ -747,8 +749,8 @@ async function updateDetails(req, res) {
       typeof req.body?.course === 'string' ? req.body.course.trim() || null : null;
     const courseId =
       typeof req.body?.courseId === 'string' ? req.body.courseId.trim() || null : null;
-    const section =
-      typeof req.body?.section === 'string' ? req.body.section.trim() || null : null;
+    const sectionId =
+      typeof req.body?.sectionId === 'string' ? req.body.sectionId.trim() || null : null;
 
     const updated = await projectsService.updateProjectDetails(projectId, {
       title,
@@ -758,7 +760,7 @@ async function updateDetails(req, res) {
       programId,
       course,
       courseId,
-      section,
+      sectionId,
     }, req.user.id);
 
     updated.keywords = typeof updated.keywords === 'string'

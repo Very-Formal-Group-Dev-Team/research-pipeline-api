@@ -60,6 +60,12 @@ router.post('/rubrics', asyncHandler(controller.createRubric));
 router.put('/rubrics/:rubricId', asyncHandler(controller.updateRubric));
 router.delete('/rubrics/:rubricId', asyncHandler(controller.deleteRubric));
 
+// Institution sections
+router.get('/sections', asyncHandler(controller.listSections));
+router.post('/sections', asyncHandler(controller.createSection));
+router.put('/sections/:sectionId', asyncHandler(controller.updateSection));
+router.delete('/sections/:sectionId', asyncHandler(controller.deleteSection));
+
 // Institution calendar events
 router.get('/events', asyncHandler(eventsController.listEvents));
 router.post('/events', asyncHandler(eventsController.createEvent));

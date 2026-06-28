@@ -395,6 +395,156 @@ async function searchRegisteredInstitutions(query) {
   return searchInstitutions(query, { activeOnly: true });
 }
 
+async function getSectionsByInstitutionId(institutionId, { activeOnly = true } = {}) {
+  const institution = await getInstitutionById(institutionId, { activeOnly: true });
+  if (!institution) {
+    return { error: 'Institution not found' };
+  }
+
+  const params = [institutionId];
+  let sql = `SELECT id, institution_id, name, code, is_active, created_at, updated_at
+             FROM institution_sections
+             WHERE institution_id = ?`;
+
+  if (activeOnly) {
+    sql += ' AND is_active = 1';
+  }
+
+  sql += ' ORDER BY name ASC';
+
+  const { rows } = await db.query(sql, params);
+  return { data: rows };
+}
+
+async function getSectionForInstitution(institutionId, sectionId, { activeOnly = true } = {}) {
+  if (!sectionId) return null;
+
+  const params = [sectionId, institutionId];
+  let sql = `SELECT id, institution_id, name, code, is_active
+             FROM institution_sections
+             WHERE id = ? AND institution_id = ?`;
+
+  if (activeOnly) {
+    sql += ' AND is_active = 1';
+  }
+
+  sql += ' LIMIT 1';
+
+  const { rows } = await db.query(sql, params);
+  return rows[0] || null;
+}
+
+async function createInstitutionSection(institutionId, { name, code }) {
+  const institution = await getInstitutionById(institutionId);
+  if (!institution) {
+    return { error: 'Institution not found' };
+  }
+
+  const trimmedName = typeof name === 'string' ? name.trim() : '';
+  const trimmedCode = typeof code === 'string' ? code.trim() || null : null;
+
+  if (!trimmedName) {
+    return { error: 'Section name is required' };
+  }
+
+  if (trimmedCode && trimmedCode.length > 50) {
+    return { error: 'Code must be 50 characters or fewer' };
+  }
+
+  try {
+    await db.query(
+      `INSERT INTO institution_sections (id, institution_id, name, code, is_active, created_at, updated_at)
+       VALUES (UUID(), ?, ?, ?, 1, NOW(), NOW())`,
+      [institutionId, trimmedName, trimmedCode],
+    );
+  } catch (err) {
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return { error: 'A section with this name already exists in your institution' };
+    }
+    throw err;
+  }
+
+  const { rows } = await db.query(
+    `SELECT id, institution_id, name, code, is_active, created_at, updated_at
+     FROM institution_sections
+     WHERE institution_id = ? AND LOWER(name) = LOWER(?)
+     LIMIT 1`,
+    [institutionId, trimmedName],
+  );
+
+  return { data: rows[0] };
+}
+
+async function updateInstitutionSection(sectionId, institutionId, { name, code, isActive }) {
+  const existing = await getSectionForInstitution(institutionId, sectionId, { activeOnly: false });
+  if (!existing) {
+    return { error: 'Section not found' };
+  }
+
+  const nextName = typeof name === 'string' ? name.trim() : existing.name;
+  const nextCode =
+    typeof code === 'string' ? code.trim() || null : existing.code;
+  const nextActive = typeof isActive === 'boolean' ? (isActive ? 1 : 0) : existing.is_active;
+
+  if (!nextName) {
+    return { error: 'Section name is required' };
+  }
+
+  if (nextCode && nextCode.length > 50) {
+    return { error: 'Code must be 50 characters or fewer' };
+  }
+
+  try {
+    await db.query(
+      `UPDATE institution_sections
+       SET name = ?, code = ?, is_active = ?, updated_at = NOW()
+       WHERE id = ? AND institution_id = ?`,
+      [nextName, nextCode, nextActive, sectionId, institutionId],
+    );
+  } catch (err) {
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return { error: 'A section with this name already exists in your institution' };
+    }
+    throw err;
+  }
+
+  if (nextName !== existing.name) {
+    await db.query(
+      `UPDATE projects SET section = ? WHERE section_id = ?`,
+      [nextName, sectionId],
+    );
+  }
+
+  const updated = await getSectionForInstitution(institutionId, sectionId, { activeOnly: false });
+  return { data: updated };
+}
+
+async function deleteInstitutionSection(sectionId, institutionId) {
+  const existing = await getSectionForInstitution(institutionId, sectionId, { activeOnly: false });
+  if (!existing) {
+    return { error: 'Section not found' };
+  }
+
+  const { rows: usage } = await db.query(
+    'SELECT COUNT(*) AS count FROM projects WHERE section_id = ?',
+    [sectionId],
+  );
+  const usageCount = Number(usage[0]?.count || 0);
+  if (usageCount > 0) {
+    return {
+      error: `Cannot delete — ${usageCount} project${usageCount === 1 ? '' : 's'} use this section`,
+      status: 409,
+    };
+  }
+
+  await db.query(
+    'DELETE FROM institution_sections WHERE id = ? AND institution_id = ?',
+    [sectionId, institutionId],
+  );
+
+  return { data: { success: true } };
+}
+
 module.exports = {
   ensureRegisteredInstitutions,
   searchInstitutions,
@@ -412,4 +562,9 @@ module.exports = {
   materializeLegacyPrograms,
   createProgram,
   updateProgram,
+  getSectionsByInstitutionId,
+  getSectionForInstitution,
+  createInstitutionSection,
+  updateInstitutionSection,
+  deleteInstitutionSection,
 };
