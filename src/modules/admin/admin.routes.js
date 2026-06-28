@@ -13,6 +13,11 @@ function asyncHandler(fn) {
 router.use(requireAuth);
 router.use(requireDashboardRole('admin'));
 
+router.get('/users', asyncHandler(controller.listUsers));
+router.get('/users/:userId', asyncHandler(controller.getUser));
+router.patch('/users/:userId', asyncHandler(controller.updateUser));
+router.get('/audit-log', asyncHandler(controller.listAuditLog));
+
 router.get('/institutions', asyncHandler(controller.listInstitutions));
 router.post('/institutions', asyncHandler(controller.createInstitution));
 router.patch('/institutions/:institutionId', asyncHandler(controller.updateInstitution));

@@ -1,6 +1,6 @@
 /**
- * Bootstrap institutions for dev/first deploy. Production catalog is managed via admin UI.
- * Entries here are upserted into the institutions table on search.
+ * Bootstrap institutions for first deploy only (empty institutions table).
+ * Production catalog is managed via admin UI after the first institution exists.
  */
 const DEFAULT_INSTITUTION = {
   name: 'Mapúa Malayan Colleges Mindanao',

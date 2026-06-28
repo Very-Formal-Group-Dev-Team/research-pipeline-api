@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const db = require('../../config/db');
 const { getRoleByUserId } = require('../modules/users/users.service');
 
 function isDevAuthBypassAllowed() {
@@ -88,29 +89,35 @@ function requireDashboardRole(...allowedRoles) {
 }
 
 function requireAuth(req, res, next) {
-  try {
-    const token = getBearerToken(req) || getSessionToken(req);
+  (async () => {
+    try {
+      const token = getBearerToken(req) || getSessionToken(req);
 
-    if (token) {
-      const user = extractUserFromToken(token);
-      if (user) {
-        req.user = user;
-        return next();
+      if (token) {
+        const user = extractUserFromToken(token);
+        if (user) {
+          const { rows } = await db.query('SELECT status FROM users WHERE id = ? LIMIT 1', [user.id]);
+          if (rows[0] && Number(rows[0].status) === 0) {
+            return res.status(403).json({ error: 'Account deactivated. Contact your administrator.' });
+          }
+          req.user = user;
+          return next();
+        }
       }
-    }
 
-    if (isDevAuthBypassAllowed()) {
-      const devUserId = req.headers['x-user-id'];
-      if (typeof devUserId === 'string' && devUserId.trim()) {
-        req.user = { id: devUserId.trim() };
-        return next();
+      if (isDevAuthBypassAllowed()) {
+        const devUserId = req.headers['x-user-id'];
+        if (typeof devUserId === 'string' && devUserId.trim()) {
+          req.user = { id: devUserId.trim() };
+          return next();
+        }
       }
-    }
 
-    return res.status(401).json({ error: 'Unauthorized' });
-  } catch (error) {
-    return res.status(401).json({ error: 'Invalid session token' });
-  }
+      return res.status(401).json({ error: 'Unauthorized' });
+    } catch (error) {
+      return res.status(401).json({ error: 'Invalid session token' });
+    }
+  })();
 }
 
 module.exports = {

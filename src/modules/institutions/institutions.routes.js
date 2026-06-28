@@ -13,5 +13,6 @@ function asyncHandler(fn) {
 router.get('/search', asyncHandler(controller.searchInstitutions));
 router.get('/me/courses', requireAuth, asyncHandler(controller.getMyInstitutionCourses));
 router.get('/me/programs', requireAuth, asyncHandler(controller.getMyInstitutionPrograms));
+router.get('/me/sections', requireAuth, asyncHandler(controller.getMyInstitutionSections));
 
 module.exports = router;

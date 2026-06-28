@@ -3,6 +3,7 @@ const fs = require('fs');
 const db = require('../../../config/db');
 const { uploadBase } = require('../../../config/env');
 const notificationsService = require('../notifications/notifications.service');
+const { logAuditEntry } = require('../audit/audit.service');
 
 const FILES_DIR = path.join(uploadBase, 'files');
 
@@ -30,6 +31,7 @@ async function createProject({
   course,
   courseId,
   section,
+  sectionId,
   documentReference,
   createdBy,
 }) {
@@ -74,13 +76,32 @@ async function createProject({
       resolvedProgramName = programRow.name;
     }
 
+    let resolvedSectionId = sectionId || null;
+    let resolvedSectionName = section || null;
+
+    if (resolvedSectionId && institutionId) {
+      const sectionRow = await institutionsService.getSectionForInstitution(
+        institutionId,
+        resolvedSectionId,
+        { activeOnly: true },
+      );
+      if (!sectionRow) {
+        throw new Error('Selected section is not available in your institution');
+      }
+      resolvedSectionName = sectionRow.name;
+    } else if (resolvedSectionId) {
+      resolvedSectionId = null;
+    } else {
+      resolvedSectionName = null;
+    }
+
     const normalizedProjectType = String(projectType || 'thesis').trim().toLowerCase();
     const safeProjectType =
       normalizedProjectType === 'capstone' ? 'capstone' : 'thesis';
 
     const [result] = await conn.execute(
-      `INSERT INTO projects (title, description, abstract, keywords, paper_standard, program, program_id, course, course_id, section, document_reference, created_by, institution_id, status, project_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'topic_proposal', ?)`,
+      `INSERT INTO projects (title, description, abstract, keywords, paper_standard, program, program_id, course, course_id, section, section_id, document_reference, created_by, institution_id, status, project_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'topic_proposal', ?)`,
       [
         title,
         abstract,
@@ -91,7 +112,8 @@ async function createProject({
         resolvedProgramId,
         resolvedCourseName,
         resolvedCourseId,
-        section || null,
+        resolvedSectionName,
+        resolvedSectionId,
         documentReference || null,
         createdBy,
         institutionId,
@@ -1282,6 +1304,19 @@ async function updateProjectStatus(projectId, status, userId) {
     [mapped, projectId]
   );
 
+  await logAuditEntry({
+    action: 'project.stage_changed',
+    actorUserId: userId,
+    targetType: 'project',
+    targetId: projectId,
+    institutionId: project.institution_id || null,
+    metadata: {
+      previousStage: currentMapped,
+      newStage: mapped,
+      projectTitle: project.title,
+    },
+  });
+
   await notifyProjectMembersStageUpdated({
     projectId,
     newStage: mapped,
@@ -1321,6 +1356,7 @@ async function updateProjectDetails(projectId, details, updatedByUserId) {
     course,
     courseId,
     section,
+    sectionId,
   } = details;
 
   const project = await getProjectById(projectId);
@@ -1330,7 +1366,28 @@ async function updateProjectDetails(projectId, details, updatedByUserId) {
 
   const institutionId = project.institution_id || null;
   const institutionsService = require('../institutions/institutions.service');
-  const normalizedSection = normalizeOptionalProjectField(section);
+
+  let resolvedSectionId = sectionId !== undefined ? sectionId || null : project.section_id || null;
+  let resolvedSectionName = section !== undefined
+    ? normalizeOptionalProjectField(section)
+    : normalizeOptionalProjectField(project.section);
+
+  if (sectionId !== undefined) {
+    if (resolvedSectionId && institutionId) {
+      const sectionRow = await institutionsService.getSectionForInstitution(
+        institutionId,
+        resolvedSectionId,
+        { activeOnly: true },
+      );
+      if (!sectionRow) {
+        throw new Error('Selected section is not available in your institution');
+      }
+      resolvedSectionName = sectionRow.name;
+    } else {
+      resolvedSectionId = null;
+      resolvedSectionName = null;
+    }
+  }
 
   let resolvedCourseId = courseId || null;
   let resolvedCourseName = course || null;
@@ -1371,7 +1428,8 @@ async function updateProjectDetails(projectId, details, updatedByUserId) {
     || paperStandard !== project.paper_standard
     || (resolvedProgramId || null) !== (project.program_id || null)
     || (resolvedCourseId || null) !== (project.course_id || null)
-    || normalizedSection !== normalizeOptionalProjectField(project.section);
+    || (resolvedSectionId || null) !== (project.section_id || null)
+    || resolvedSectionName !== normalizeOptionalProjectField(project.section);
 
   await db.query(
     `UPDATE projects
@@ -1383,6 +1441,7 @@ async function updateProjectDetails(projectId, details, updatedByUserId) {
          course = ?,
          course_id = ?,
          section = ?,
+         section_id = ?,
          updated_at = NOW()
      WHERE id = ?`,
     [
@@ -1393,7 +1452,8 @@ async function updateProjectDetails(projectId, details, updatedByUserId) {
       resolvedProgramId,
       resolvedCourseName,
       resolvedCourseId,
-      normalizedSection,
+      resolvedSectionName,
+      resolvedSectionId,
       projectId,
     ],
   );

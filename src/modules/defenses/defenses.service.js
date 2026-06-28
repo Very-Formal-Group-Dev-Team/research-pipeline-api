@@ -1,5 +1,6 @@
 const db = require('../../../config/db');
 const { createNotification } = require('../notifications/notifications.service');
+const { logAuditEntry } = require('../audit/audit.service');
 const {
   JITSI_MEETING_PREFIX,
   createJitsiMeetingFields,
@@ -2267,6 +2268,19 @@ async function saveDefensePanelEvaluations(userId, defenseId, payload) {
     }
 
     await conn.commit();
+
+    await logAuditEntry({
+      action: 'evaluation.submitted',
+      actorUserId: userId,
+      targetType: 'defense',
+      targetId: defenseId,
+      institutionId: defense.institution_id || null,
+      metadata: {
+        projectId: defense.project_id,
+        criteriaCount: normalizedScores.length,
+      },
+    });
+
     return getDefenseMeetingSession(userId, defenseId);
   } catch (err) {
     if (conn) {

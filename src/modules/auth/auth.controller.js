@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const authService = require('./auth.service');
 const { validatePassword } = require('../../lib/passwordPolicy');
+const { logAuditEntry } = require('../audit/audit.service');
 
 function getCookieOptions(rememberMe = true) {
   const isProduction = process.env.NODE_ENV === 'production';
@@ -246,9 +247,20 @@ async function googleCallback(req, res) {
 
     const oauthResult = await authService.findOrCreateGoogleUser(profile);
     if (oauthResult.error) {
+      if (oauthResult.error.toLowerCase().includes('deactivated')) {
+        return res.redirect(`${webOrigin}/login?error=account_deactivated`);
+      }
       return res.redirect(`${webOrigin}/login?error=account_exists`);
     }
     const token = authService.generateToken(oauthResult.user);
+
+    await logAuditEntry({
+      action: 'user.login',
+      actorUserId: oauthResult.user.id,
+      targetType: 'user',
+      targetId: oauthResult.user.id,
+      metadata: { method: 'google' },
+    });
 
     res.cookie('session_token', token, getCookieOptions());
     return res.redirect(`${webOrigin}/auth/continue?token=${encodeURIComponent(token)}`);

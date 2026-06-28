@@ -1,5 +1,6 @@
 const db = require('../../../config/db');
 const { getJitsiBaseUrl } = require('../../lib/jitsi');
+const { getOnboardingRoles } = require('../users/users.service');
 
 function toCount(value) {
   if (value == null) return 0;
@@ -26,8 +27,11 @@ async function getPublicStats() {
 }
 
 async function getPublicConfig() {
+  const onboarding = await getOnboardingRoles();
   return {
     jitsiBaseUrl: getJitsiBaseUrl(),
+    onboardingRoles: onboarding.roles,
+    allowAdminBootstrap: onboarding.allowAdminBootstrap,
   };
 }
 

@@ -361,6 +361,49 @@ async function deleteRubric(req, res) {
   return res.json(result.data);
 }
 
+async function listSections(req, res) {
+  const sections = await coordinatorService.listSections(req.institution.id);
+  return res.json(sections);
+}
+
+async function createSection(req, res) {
+  const result = await coordinatorService.createSection(req.institution.id, {
+    name: req.body?.name,
+    code: req.body?.code,
+  });
+  if (result.error) {
+    return res.status(400).json({ error: result.error });
+  }
+  return res.status(201).json(result.data);
+}
+
+async function updateSection(req, res) {
+  const result = await coordinatorService.updateSection(
+    req.institution.id,
+    req.params.sectionId,
+    {
+      name: req.body?.name,
+      code: req.body?.code,
+      isActive: typeof req.body?.isActive === 'boolean' ? req.body.isActive : undefined,
+    },
+  );
+  if (result.error) {
+    return res.status(400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
+async function deleteSection(req, res) {
+  const result = await coordinatorService.deleteSection(
+    req.institution.id,
+    req.params.sectionId,
+  );
+  if (result.error) {
+    return res.status(result.status || 400).json({ error: result.error });
+  }
+  return res.json(result.data);
+}
+
 module.exports = {
   requireCoordinator,
   getDashboard,
@@ -393,4 +436,8 @@ module.exports = {
   createRubric,
   updateRubric,
   deleteRubric,
+  listSections,
+  createSection,
+  updateSection,
+  deleteSection,
 };

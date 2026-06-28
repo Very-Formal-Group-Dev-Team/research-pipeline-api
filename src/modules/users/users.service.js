@@ -1,7 +1,9 @@
 const db = require('../../../config/db');
 const { createNotification } = require('../notifications/notifications.service');
+const { logAuditEntry, countUsersWithRole } = require('../audit/audit.service');
 
 const ALLOWED_ROLE_VALUES = new Set(['student', 'teacher', 'adviser', 'coordinator', 'admin']);
+const PRIVILEGED_ROLES = new Set(['admin', 'coordinator']);
 
 function normalizeRole(role) {
   if (!role || typeof role !== 'string') return null;
@@ -138,6 +140,21 @@ async function completeProfile(userId, payload) {
     return { error: 'role must be one of: student, teacher, adviser, coordinator, admin' };
   }
 
+  if (PRIVILEGED_ROLES.has(role)) {
+    if (role === 'admin') {
+      const adminCount = await countUsersWithRole('admin');
+      if (adminCount > 0) {
+        return {
+          error: 'Admin access must be assigned by a platform administrator. Choose Student or Adviser to continue.',
+        };
+      }
+    } else {
+      return {
+        error: 'Coordinator access must be assigned by a platform administrator. Choose Student or Adviser to continue.',
+      };
+    }
+  }
+
   const email = typeof payload.email === 'string' && payload.email.trim() ? payload.email.trim() : null;
   const avatarUrl = normalizeAvatarUrl(payload.avatarUrl || payload.googlePhotoUrl || null);
 
@@ -188,11 +205,32 @@ async function completeProfile(userId, payload) {
       'INSERT INTO user_roles (id, user_id, role, institution_id, created_at) VALUES (UUID(), ?, ?, ?, NOW())',
       [userId, role, institutionId],
     );
+    await logAuditEntry({
+      action: 'user.role_assigned',
+      actorUserId: userId,
+      targetType: 'user',
+      targetId: userId,
+      institutionId,
+      metadata: { role, source: 'onboarding' },
+    });
   } else if (currentRole.rows[0].role !== role || currentRole.rows[0].institution_id !== institutionId) {
+    const previousRole = currentRole.rows[0].role;
     await db.query(
       'UPDATE user_roles SET role = ?, institution_id = ? WHERE id = ?',
       [role, institutionId, currentRole.rows[0].id],
     );
+    await logAuditEntry({
+      action: 'user.role_changed',
+      actorUserId: userId,
+      targetType: 'user',
+      targetId: userId,
+      institutionId,
+      metadata: {
+        previousRole,
+        newRole: role,
+        source: 'onboarding',
+      },
+    });
   }
 
   const roleWelcomeMessages = {
@@ -370,6 +408,20 @@ async function updateDisplayPreferences(userId, payload) {
   return getDisplayPreferences(userId);
 }
 
+async function getOnboardingRoles() {
+  const adminCount = await countUsersWithRole('admin');
+  const roles = [
+    { value: 'student', label: 'Student' },
+    { value: 'teacher', label: 'Teacher / Adviser' },
+  ];
+
+  if (adminCount === 0) {
+    roles.push({ value: 'admin', label: 'Admin (platform setup)' });
+  }
+
+  return { roles, allowAdminBootstrap: adminCount === 0 };
+}
+
 module.exports = {
   completeProfile,
   getProfileByUserId,
@@ -379,4 +431,5 @@ module.exports = {
   updateMyProfile,
   getDisplayPreferences,
   updateDisplayPreferences,
+  getOnboardingRoles,
 };
