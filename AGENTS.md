@@ -23,6 +23,8 @@
 - Use the Docker scripts in `package.json` when working on deployment or local parity.
 
 ## Before changing behavior
-- Check [README.md](README.md), [api_docs.md](api_docs.md), [Deployment.md](Deployment.md), and [DOCKER.md](DOCKER.md) before inventing new patterns.
+- Check [README.md](README.md), [docs/SETUP.md](docs/SETUP.md), [docs/API_REFERENCE.md](docs/API_REFERENCE.md), [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), and [docs/DOCKER.md](docs/DOCKER.md) before inventing new patterns.
+- For Railway-specific steps, see [.github/instructions/railway-deployment.instructions.md](.github/instructions/railway-deployment.instructions.md).
+- If you add or change API routes, update [docs/API_REFERENCE.md](docs/API_REFERENCE.md) in the same pull request.
 - If you touch uploads, auth, or env handling, follow the existing rules in `src/middleware/auth.js`, `config/env.js`, and `config/db.js`.
 - Do not add a new abstraction layer unless the current module structure cannot support the change cleanly.
